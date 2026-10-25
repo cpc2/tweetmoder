@@ -1,12 +1,14 @@
 <p align="center"><img src="icons/icon256.png" width="128" height="128" alt=""></p>
 
+Extension for Twitter (forked from Control Panel for Twitter) with a lot of useful features! Mainly opening replies within the timeline, quote tweets on the side, zooming in images by hovering and getting explanations from AI because there are too many vagueposts or unexplained jokes. And it also has the features the original extension had, of course. If you have any issues or ideas for more features let me know and I'll look into it!
+
+The text below is all automated.
+
 <h1 align="center">Tweetmoder</h1>
 
 <p align="center"><b>Read replies, quoted tweets and polls without leaving the timeline.</b><br>
 A fork of <a href="https://github.com/insin/control-panel-for-twitter">Control Panel for Twitter</a> for desktop browsers.</p>
 
-<p align="center"><a href="https://github.com/cpc2/tweetmoder/releases/download/v1.0.0/tweetmoder-trailer.mp4"><img src="promo/trailer-thumbnail.jpg" width="640" alt="Tweetmoder trailer"></a><br>
-<a href="https://github.com/cpc2/tweetmoder/releases/download/v1.0.0/tweetmoder-trailer.mp4">▶ Watch the 55-second trailer</a></p>
 
 ## What it adds
 
