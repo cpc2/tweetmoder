@@ -3,8 +3,8 @@
   "default_locale": "en",
   "name": "__MSG_extensionName__",
   "description": "__MSG_extensionDescription__",
-  "homepage_url": "https://soitis.dev/control-panel-for-twitter",
-  "version": "4.25.1",
+  "homepage_url": "https://github.com/cpc2/tweetmoder",
+  "version": "1.0.0",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -51,7 +51,7 @@
   ],
   "browser_specific_settings": {
     "gecko": {
-      "id": "{5cce4ab5-3d47-41b9-af5e-8203eea05245}",
+      "id": "tweetmoder@cpc2.github.io",
       "strict_min_version": "121.0"
     },
     "gecko_android": {

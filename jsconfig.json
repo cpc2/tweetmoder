@@ -5,8 +5,10 @@
     "moduleDetection": "force",
     "moduleResolution": "nodenext",
     "target": "ES2022",
+    "types": ["chrome", "greasemonkey"],
     "strict": false
   },
+  "include": ["*.js", "types.d.ts"],
   "exclude": [
     "node_modules",
     "scripts/"

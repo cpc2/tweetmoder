@@ -509,3 +509,21 @@ body.iOS.safari .checkbox input:focus + .toggle {
 .mb-0 {
   margin-bottom: 0 !important;
 }
+
+/* Ask about this post (AI) */
+section.text input {
+  font: inherit;
+  flex: 0 1 55%;
+  min-width: 0;
+  margin-left: 12px;
+  padding: 4px 6px;
+}
+
+section.group > p.askHint code {
+  font-size: 11px;
+}
+
+body.askApiProvider .askCodexOnly,
+body:not(.askApiProvider) .askApiOnly {
+  display: none;
+}

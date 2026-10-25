@@ -84,10 +84,10 @@
     "description": "<= 112 characters"
   },
   "extensionName": {
-    "message": "Control Panel for Twitter"
+    "message": "Tweetmoder"
   },
   "extensionNameDisabled": {
-    "message": "Control Panel for Twitter (disabled)"
+    "message": "Tweetmoder (disabled)"
   },
   "fastBlockLabel": {
     "message": "Fast blocking (skips confirm dialog)"
@@ -311,6 +311,24 @@
   "hideWhoToFollowEtcLabel": {
     "message": "Hide suggested content in the timeline"
   },
+  "inlineRepliesLabel": {
+    "message": "Click a tweet in a timeline to show its replies below it"
+  },
+  "autoTranslateRepliesLabel": {
+    "message": "Automatically translate replies in other languages"
+  },
+  "askAboutPostsLabel": {
+    "message": "Show a ? button to ask AI what a tweet is about"
+  },
+  "quoteTweetPreviewLabel": {
+    "message": "Open quoted tweets in a reader beside the timeline"
+  },
+  "hoverImagePreviewLabel": {
+    "message": "Enlarge tweet images on hover"
+  },
+  "compactNavigationLabel": {
+    "message": "Use a narrower left navigation panel"
+  },
   "homeTimelineOptionsLabel": {
     "message": "Home timeline"
   },
@@ -503,5 +521,47 @@
   },
   "xFixesLabel": {
     "message": "X fixes"
+  },
+  "inlineReplyActionsLabel": {
+    "message": "Add like and reply buttons to inline replies"
+  },
+  "keyboardShortcutsLabel": {
+    "message": "Keyboard shortcuts: e replies, a ask, q quoted tweet, and j/k, l, r, o in inline replies"
+  },
+  "askOptionsLabel": {
+    "message": "Ask about this tweet (AI)"
+  },
+  "askOpenInReaderLabel": {
+    "message": "Show answers about timeline tweets in the reader beside the timeline"
+  },
+  "askProviderLabel": {
+    "message": "AI provider"
+  },
+  "askApiBaseUrlLabel": {
+    "message": "API URL"
+  },
+  "askApiKeyLabel": {
+    "message": "API key"
+  },
+  "askModelLabel": {
+    "message": "Model"
+  },
+  "askReasoningEffortLabel": {
+    "message": "Reasoning effort"
+  },
+  "askDeepModelLabel": {
+    "message": "\"Think harder\" model"
+  },
+  "askDeepReasoningEffortLabel": {
+    "message": "\"Think harder\" reasoning effort"
+  },
+  "askWebSearchLabel": {
+    "message": "Let the AI search the web (Codex and OpenAI API)"
+  },
+  "askFastModeLabel": {
+    "message": "Use fast mode when your plan includes it (Codex and OpenAI API)"
+  },
+  "askExtraInstructionsLabel": {
+    "message": "Extra instructions for the AI"
   }
 }

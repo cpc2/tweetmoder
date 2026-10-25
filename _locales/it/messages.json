@@ -81,10 +81,10 @@
     "message": "Ti dà più controllo su Twitter, aggiunge fuznioni mancanti e migliora l'interfaccia"
   },
   "extensionName": {
-    "message": "Control Panel for Twitter"
+    "message": "Tweetmoder"
   },
   "extensionNameDisabled": {
-    "message": "Control Panel for Twitter (disabilitato)"
+    "message": "Tweetmoder (disabilitato)"
   },
   "fastBlockLabel": {
     "message": "Blocco rapido (salta la conferma)"

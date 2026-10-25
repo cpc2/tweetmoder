@@ -45,34 +45,59 @@ chrome.storage.local.get((/** @type {Partial<import("./types").Config>} */ store
   $settings.type = 'text/json'
   $settings.id = 'cpftSettings'
   document.documentElement.appendChild($settings)
-  $settings.innerText = JSON.stringify(storedConfig)
+  $settings.innerText = JSON.stringify(withoutPrivateSettings(storedConfig))
 
   let $main = document.createElement('script')
   $main.src = chrome.runtime.getURL('script.js')
   $main.onload = function() {
-    this.remove()
+    $main.remove()
   }
   document.documentElement.appendChild($main)
 
   chrome.storage.onChanged.addListener(onConfigChange)
 })
 
+/**
+ * AI settings stay in the extension: the page runs alongside Twitter's own
+ * scripts, which mustn't see the API key or be able to redirect requests.
+ * @param {string} key
+ */
+function isPrivateSetting(key) {
+  return key.startsWith('ask') && key != 'askAboutPosts' && key != 'askOpenInReader'
+}
+
+function withoutPrivateSettings(config) {
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !isPrivateSetting(key)))
+}
+
 // Inject config changes from options pages into the settings <script>
 function onConfigChange(changes) {
   if (changes.enabled) localStorage.cpftEnabled = changes.enabled.newValue
   if (changes.replaceLogo) localStorage.cpftReplaceLogo = changes.replaceLogo.newValue
-  let configChanges = Object.fromEntries(
+  let configChanges = withoutPrivateSettings(Object.fromEntries(
     Object.entries(changes).map(([key, {newValue}]) => [key, newValue])
-  )
+  ))
+  if (Object.keys(configChanges).length == 0) return
   $settings.innerText = JSON.stringify(configChanges)
 }
 
 // Store config changes sent from the injected script
 window.addEventListener('message', (event) => {
   if (event.source !== window) return
+  // Relay "Ask about this tweet" requests to the background page, which calls
+  // the configured AI provider
+  if (event.data.type === 'cpftAskRequest' && event.data.requestId) {
+    let {requestId, request} = event.data
+    chrome.runtime.sendMessage({type: 'cpftAsk', request}, (response) => {
+      let error = chrome.runtime.lastError?.message
+      window.postMessage({type: 'cpftAskResponse', requestId, ...(error ? {error} : response)}, location.origin)
+    })
+    return
+  }
   if (event.data.type === 'cpftConfigChange' && event.data.changes) {
+    let changes = withoutPrivateSettings(event.data.changes)
     chrome.storage.onChanged.removeListener(onConfigChange)
-    chrome.storage.local.set(event.data.changes, () => {
+    chrome.storage.local.set(changes, () => {
       chrome.storage.onChanged.addListener(onConfigChange)
     })
   }

@@ -1,28 +1,61 @@
-# [Control Panel for Twitter](https://soitis.dev/control-panel-for-twitter)
+<p align="center"><img src="icons/icon256.png" width="128" height="128" alt=""></p>
 
-[![](icons/icon128.png)](https://soitis.dev/control-panel-for-twitter)
+<h1 align="center">Tweetmoder</h1>
 
-**Control Panel for Twitter is a browser extension for desktop and mobile browsers, which gives you more control over Twitter and adds missing features and UI improvements**
+<p align="center"><b>Read replies, quoted tweets and polls without leaving the timeline.</b><br>
+A fork of <a href="https://github.com/insin/control-panel-for-twitter">Control Panel for Twitter</a> for desktop browsers.</p>
 
-> [!IMPORTANT]
-> This is the support repository for Control Panel for Twitter - for installation links, screenshots, information about the extension, and FAQs, please visit the [Control Panel for Twitter website](https://soitis.dev/control-panel-for-twitter).
+<p align="center"><a href="https://github.com/cpc2/tweetmoder/releases/download/v1.0.0/tweetmoder-trailer.mp4"><img src="promo/trailer-thumbnail.jpg" width="640" alt="Tweetmoder trailer"></a><br>
+<a href="https://github.com/cpc2/tweetmoder/releases/download/v1.0.0/tweetmoder-trailer.mp4">▶ Watch the 55-second trailer</a></p>
 
-Check the latest updates and availability for your browser on the [releases page](https://github.com/insin/control-panel-for-twitter/releases).
+## What it adds
 
-Follow [@ControlPanelFT](https://twitter.com/ControlPanelFT) on Twitter for extension news and other announcements.
+Everything in Control Panel for Twitter, plus:
 
-## Support
+- **Inline replies:** click a tweet in a timeline and its replies open beneath it. Replies expand into their own replies, five at a time, without the timeline losing its place.
+- **Quote reader:** click a quoted tweet, even a quote inside a quote, and it opens in a reader beside the timeline with its photos, video, polls, replies and earlier conversation. **Back** steps through what you've read.
+- **Quote Tweets:** a quotes button on tweets opens their Quote Tweets in the reader, newest first.
+- **Ask about this tweet:** a **?** button asks AI what a tweet is about. It's for vagueposts, jokes, wordplay, text in images and background on a situation. Answers have **Think harder**, **Ask again** and follow-up questions.
+- **Automatic translation** of replies in other languages, using X's own translations.
+- **Like and reply** right from inline replies, and **keyboard shortcuts** for all of it.
+- **Image previews** that enlarge photos on hover, and a narrower left navigation panel to make room for the reader.
 
-To report a bug [create a new Issue](https://github.com/insin/control-panel-for-twitter/issues/new) here on GitHub.
+Every addition has its own toggle in the options.
 
-Please include:
+## Install
 
-- The version of Control Panel for Twitter you're using
-- The browser and operating system you're using it on
-- Relevant URLs and screenshots if applicable
+Tweetmoder isn't in the browser stores, so it's installed from the [releases page](https://github.com/cpc2/tweetmoder/releases).
 
-If you don't have a GitHub account, you can use the [Browser Extension Feedback & Support form](https://soitis.dev/extensions/feedback) on our website instead, or email [extensions@soitis.dev](mailto:extensions@soitis.dev).
+**Chrome, Edge, Brave and other Chromium browsers**
 
-## Attribution
+1. Download `tweetmoder-<version>.mv3.zip` and unzip it into a folder you'll keep.
+2. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`) and turn on **Developer mode**.
+3. Choose **Load unpacked** and select the unzipped folder.
 
-Icon adapted from "Ibis icon" by [Delapouite](https://delapouite.com/) from [game-icons.net](https://game-icons.net), [CC 3.0 BY](https://creativecommons.org/licenses/by/3.0/)
+If you also use Control Panel for Twitter, turn it off while Tweetmoder is on, so they don't both change the page.
+
+**Firefox:** the `mv2.zip` isn't signed by Mozilla, so Firefox only runs it as a temporary add-on: open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on…** and pick the zip. It's removed when Firefox restarts.
+
+## Ask about this tweet
+
+Choose the AI provider in Tweetmoder's options:
+
+- **OpenAI API:** your OpenAI API key. Uses web search and sees images.
+- **OpenAI-compatible API:** any Chat Completions URL, such as OpenRouter, Ollama or LM Studio.
+- **Codex (local helper), the default:** uses your ChatGPT plan through OpenAI's [Codex CLI](https://github.com/openai/codex) instead of a paid API key. Windows only, for now. It needs Node.js, and Codex installed and signed in. Then clone this repository and run:
+
+  ```
+  node ask-helper/install.cjs --id <Tweetmoder's id from the extensions page>
+  ```
+
+  Reload Tweetmoder afterwards. The helper runs Codex in a read-only sandbox with its shell and other tools turned off, because tweets are untrusted text.
+
+See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) for what's sent where.
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for how the additions work, and [CONTRIBUTING.md](CONTRIBUTING.md) for the upstream codebase. `npm test` runs the tests.
+
+## Credits
+
+Tweetmoder is built on [Control Panel for Twitter](https://github.com/insin/control-panel-for-twitter) by Jonny Buchanan. Its many features and options all come from there. Both are released under the [MIT License](LICENSE).

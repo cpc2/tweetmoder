@@ -317,6 +317,62 @@
           <span class="toggle"></span>
         </label>
       </section>
+      <section class="checkbox">
+        <label>
+          <span id="inlineRepliesLabel">Click a tweet in a timeline to show its replies below it</span>
+          <input type="checkbox" name="inlineReplies">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="inlineReplyActionsLabel">Add like and reply buttons to inline replies</span>
+          <input type="checkbox" name="inlineReplyActions">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="keyboardShortcutsLabel">Keyboard shortcuts: e replies, a ask, q quoted tweet, and j/k, l, r, o in inline replies</span>
+          <input type="checkbox" name="keyboardShortcuts">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="autoTranslateRepliesLabel">Automatically translate replies in other languages</span>
+          <input type="checkbox" name="autoTranslateReplies">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="askAboutPostsLabel">Show a ? button to ask AI what a tweet is about</span>
+          <input type="checkbox" name="askAboutPosts">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="quoteTweetPreviewLabel">Open quoted tweets in a reader beside the timeline</span>
+          <input type="checkbox" name="quoteTweetPreview">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="hoverImagePreviewLabel">Enlarge tweet images on hover</span>
+          <input type="checkbox" name="hoverImagePreview">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox desktop">
+        <label>
+          <span id="compactNavigationLabel">Use a narrower left navigation panel</span>
+          <input type="checkbox" name="compactNavigation">
+          <span class="toggle"></span>
+        </label>
+      </section>
       <section class="select">
         <label>
           <span id="sortRepliesLabel">Default sorting of replies</span>
@@ -895,6 +951,93 @@
       </section>
     </section>
 
+    <section class="group labelled">
+      <label id="askOptionsLabel">Ask about this tweet (AI)</label>
+      <section class="checkbox">
+        <label>
+          <span id="askOpenInReaderLabel">Show answers about timeline tweets in the reader beside the timeline</span>
+          <input type="checkbox" name="askOpenInReader">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="select">
+        <label>
+          <span id="askProviderLabel">AI provider</span>
+          <select name="askProvider">
+            <option value="codex">Codex (local helper)</option>
+            <option value="openai">OpenAI API</option>
+            <option value="openai-compatible">OpenAI-compatible API</option>
+          </select>
+        </label>
+      </section>
+      <p id="askCodexHint" class="askHint askCodexOnly">Uses your Codex sign-in. Install the helper once with <code>npm run ask-helper:install</code> in the extension's folder, from a normal terminal.</p>
+      <p id="askApiHint" class="askHint askApiOnly">Works with OpenAI, OpenRouter, Ollama, LM Studio and other APIs which accept OpenAI requests. Your API key is only sent to the API URL below.</p>
+      <section class="text askApiOnly">
+        <label>
+          <span id="askApiBaseUrlLabel">API URL</span>
+          <input type="url" name="askApiBaseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
+        </label>
+      </section>
+      <section class="text askApiOnly">
+        <label>
+          <span id="askApiKeyLabel">API key</span>
+          <input type="password" name="askApiKey" autocomplete="off" spellcheck="false">
+        </label>
+      </section>
+      <section class="text">
+        <label>
+          <span id="askModelLabel">Model</span>
+          <input type="text" name="askModel" spellcheck="false">
+        </label>
+      </section>
+      <section class="select">
+        <label>
+          <span id="askReasoningEffortLabel">Reasoning effort</span>
+          <select name="askReasoningEffort">
+            <option value="">Model default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </section>
+      <section class="text">
+        <label>
+          <span id="askDeepModelLabel">"Think harder" model</span>
+          <input type="text" name="askDeepModel" spellcheck="false">
+        </label>
+      </section>
+      <section class="select">
+        <label>
+          <span id="askDeepReasoningEffortLabel">"Think harder" reasoning effort</span>
+          <select name="askDeepReasoningEffort">
+            <option value="">Model default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="askWebSearchLabel">Let the AI search the web (Codex and OpenAI API)</span>
+          <input type="checkbox" name="askWebSearch">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="checkbox">
+        <label>
+          <span id="askFastModeLabel">Use fast mode when your plan includes it (Codex and OpenAI API)</span>
+          <input type="checkbox" name="askFastMode">
+          <span class="toggle"></span>
+        </label>
+      </section>
+      <section class="textarea">
+        <label id="askExtraInstructionsLabel" for="askExtraInstructions">Extra instructions for the AI</label>
+        <textarea id="askExtraInstructions" name="askExtraInstructions" rows="3" placeholder="For example: answer in Spanish, or keep answers to one sentence"></textarea>
+      </section>
+    </section>
+
     <section>
       <details id="experiments">
         <summary id="experimentsOptionsLabel">
@@ -937,6 +1080,7 @@
 
     <div id="version">v4.25.1<span id="debugCountdown"></span></div>
   </form>
+  <script src="ask-prompt.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

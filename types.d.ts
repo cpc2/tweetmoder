@@ -70,6 +70,26 @@ export type Config = {
   hideViewActivityLinks: boolean
   hideViews: boolean
   hideWhoToFollowEtc: boolean
+  inlineReplies: boolean
+  autoTranslateReplies: boolean
+  askAboutPosts: boolean
+  askOpenInReader: boolean
+  inlineReplyActions: boolean
+  keyboardShortcuts: boolean
+  // AI settings, which only the options and background pages see (defaults in ask-prompt.js)
+  askProvider?: 'codex' | 'openai' | 'openai-compatible'
+  askModel?: string
+  askReasoningEffort?: string
+  askDeepModel?: string
+  askDeepReasoningEffort?: string
+  askFastMode?: boolean
+  askWebSearch?: boolean
+  askApiBaseUrl?: string
+  askApiKey?: string
+  askExtraInstructions?: string
+  quoteTweetPreview: boolean
+  hoverImagePreview: boolean
+  compactNavigation: boolean
   listRetweets: 'ignore' | 'hide'
   mutableQuoteTweets: boolean
   mutedQuotes: QuotedTweet[]
@@ -238,6 +258,109 @@ export type IndividualTweetTimelineOptions = {
 export type IndividualTweetDetails = {
   itemType: TimelineItemType,
   hidden: boolean | null,
+}
+
+export type InlineReply = {
+  id: string
+  path: string
+  inReplyToId: string | null
+  inReplyToScreenName: string | null
+  screenName: string
+  name: string
+  avatarUrl: string | null
+  createdAt: Date
+  lang: string | null
+  text: string
+  entities: any
+  displayTextRange: [number, number] | null
+  media: any[]
+  possiblySensitive: boolean
+  likeCount: number
+  liked: boolean
+  replyCount: number
+  quoteCount: number
+  quotedId: string | null
+  isTranslatable: boolean
+  card: {title: string | null, description: string | null, domain: string | null} | null
+  poll: {choices: {label: string, count: number}[], endsAt: Date | null, final: boolean, selected: number | null} | null
+  quoted: InlineReply | null
+  quoteUnavailable: boolean
+}
+
+export type InlineReplies = {
+  status: 'loading' | 'loaded' | 'error'
+  path: string
+  replies: InlineReply[]
+  /** The tweet's reply count, if known */
+  replyCount: number | null
+  shown: number
+  cursor: string | null
+  fetched: boolean
+  error?: string
+}
+
+export type InlineReplyTranslation = {
+  status: 'loading' | 'loaded' | 'error'
+  shown: boolean
+  text?: string
+  entities?: any
+  sourceLanguage?: string
+}
+
+export type QuoteConversation = {
+  tweet: InlineReply
+  ancestors: InlineReply[]
+  replies: InlineReply[]
+  cursor: string | null
+}
+
+export type QuoteReaderState = {
+  id: string
+  path: string
+  /** Header title when not showing a quoted post */
+  title?: string
+  status: 'loading' | 'loaded' | 'error'
+  scrollTop: number
+  focusOnLoad?: boolean
+  resolveQuote: boolean | number
+  conversation?: QuoteConversation
+  error?: string
+  mode?: 'post' | 'quotes'
+  quotes?: InlineReply[]
+  cursor?: string | null
+  fetched?: boolean
+}
+
+/** A question about a post (null for "what is this about?") and its answer */
+export type AskTurn = {
+  question: string | null
+  status: 'loading' | 'loaded' | 'error'
+  /** Asked with the stronger "Think harder" model */
+  deep: boolean
+  answer?: string
+  model?: string
+  elapsedMs?: number
+  error?: string
+}
+
+export type AskThread = {
+  /** The post's details, kept for follow-up questions */
+  context?: {post: AskPost, ancestors: AskPost[], replies: {author: string, text: string}[]}
+  turns: AskTurn[]
+}
+
+/** Post details sent to the ask helper */
+export type AskPost = {
+  url: string
+  author: string
+  createdAt: string | null
+  lang: string | null
+  replyingTo?: string
+  text: string
+  translation?: string
+  card?: InlineReply['card']
+  media: {type: string, imageUrl: string, videoUrl?: string, durationMs?: number, alt?: string}[]
+  quoted?: AskPost
 }
 
 export type UserInfo = {

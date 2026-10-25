@@ -117,6 +117,26 @@ for (let translationId of [
   'hideViewsLabel',
   'hideWhatsHappeningLabel',
   'hideWhoToFollowEtcLabel',
+  'inlineRepliesLabel',
+  'autoTranslateRepliesLabel',
+  'askAboutPostsLabel',
+  'inlineReplyActionsLabel',
+  'keyboardShortcutsLabel',
+  'askOptionsLabel',
+  'askOpenInReaderLabel',
+  'askProviderLabel',
+  'askApiBaseUrlLabel',
+  'askApiKeyLabel',
+  'askModelLabel',
+  'askReasoningEffortLabel',
+  'askDeepModelLabel',
+  'askDeepReasoningEffortLabel',
+  'askWebSearchLabel',
+  'askFastModeLabel',
+  'askExtraInstructionsLabel',
+  'quoteTweetPreviewLabel',
+  'hoverImagePreviewLabel',
+  'compactNavigationLabel',
   'homeTimelineOptionsLabel',
   'listRetweetsLabel',
   'mutableQuoteTweetsLabel',
@@ -203,6 +223,8 @@ if (navigator.userAgent.includes('Safari/') && !/Chrom(e|ium)\//.test(navigator.
 //#region Default config
 /** @type {import("./types").Config} */
 const defaultConfig = {
+  // AI settings for "Ask about this post", shared with the background page
+  ...globalThis.cpftAsk.ASK_DEFAULTS,
   enabled: true,
   debug: false,
   debugLogTimelineStats: false,
@@ -210,8 +232,8 @@ const defaultConfig = {
   version: /(Android|iP(ad|hone))/.test(navigator.userAgent) ? 'mobile' : 'desktop',
   // Shared
   addAddMutedWordMenuItem: true,
-  addFocusedTweetAccountLocation: false,
-  alwaysUseLatestTweets: true,
+  addFocusedTweetAccountLocation: true,
+  alwaysUseLatestTweets: false,
   bypassAgeVerification: true,
   darkModeTheme: 'lightsOut',
   defaultToLatestSearch: false,
@@ -236,7 +258,7 @@ const defaultConfig = {
   hideEditImage: true,
   hideExplorePageContents: true,
   hideFollowingMetrics: true,
-  hideForYouTimeline: true,
+  hideForYouTimeline: false,
   hideGrokNav: true,
   hideGrokTweets: false,
   hideHistoryNav: false,
@@ -268,8 +290,17 @@ const defaultConfig = {
   hideUnavailableQuoteTweets: true,
   hideVerifiedNotificationsTab: true,
   hideViewActivityLinks: true,
-  hideViews: true,
+  hideViews: false,
   hideWhoToFollowEtc: true,
+  inlineReplies: true,
+  autoTranslateReplies: true,
+  askAboutPosts: true,
+  askOpenInReader: true,
+  inlineReplyActions: true,
+  keyboardShortcuts: true,
+  quoteTweetPreview: true,
+  hoverImagePreview: true,
+  compactNavigation: true,
   listRetweets: 'ignore',
   mutableQuoteTweets: true,
   mutedQuotes: [],
@@ -280,7 +311,7 @@ const defaultConfig = {
   restoreOtherInteractionLinks: true,
   restoreQuoteTweetsLink: true,
   restoreTweetSource: true,
-  retweets: 'separate',
+  retweets: 'ignore',
   revertMediaCarousel: true,
   revertProfileTabs: false,
   revertTwemoji: true,
@@ -291,8 +322,8 @@ const defaultConfig = {
   showPremiumReplyFollowedBy: true,
   showPremiumReplyFollowing: true,
   showPremiumReplyGovernment: true,
-  sortFollowing: 'mostRecent',
-  sortReplies: 'relevant',
+  sortFollowing: 'popular',
+  sortReplies: 'liked',
   tweakQuoteTweetsPage: true,
   twitterBlueChecks: 'replace',
   uninvertFollowButtons: true,
@@ -428,7 +459,8 @@ function applyConfig() {
  * @param {Event} e
  */
 function onFormChanged(e) {
-  if (e.target instanceof HTMLTextAreaElement) return
+  // Custom CSS has its own Save button
+  if (e.target instanceof HTMLTextAreaElement && e.target.name != 'askExtraInstructions') return
 
   /** @type {Partial<import("./types").Config>} */
   let changedConfig = {}
@@ -510,6 +542,7 @@ function updateCheckboxGroups() {
 
 function updateDisplay() {
   $body.classList.toggle('debugging', optionsConfig.debug)
+  $body.classList.toggle('askApiProvider', optionsConfig.askProvider != 'codex')
   $body.classList.toggle('chronological', optionsConfig.alwaysUseLatestTweets)
   $body.classList.toggle('disabled', !optionsConfig.enabled)
   $body.classList.toggle('disabledHomeTimeline', optionsConfig.disableHomeTimeline)

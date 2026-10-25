@@ -4,6 +4,11 @@ const XMLHttpRequest_open = XMLHttpRequest.prototype.open
 XMLHttpRequest.prototype.open = function(method, url) {
   if (!config.enabled) return XMLHttpRequest_open.apply(this, [method, url])
 
+  if (url.includes('/TweetDetail?')) {
+    rememberTweetDetailRequest(url)
+  }
+  if (url.includes('/SearchTimeline?')) rememberQuoteSearchRequest(url)
+
   if (config.sortReplies != 'relevant' && !userSortedReplies && url.includes('/TweetDetail?')) {
     try {
       let request = new URL(url)
@@ -61,7 +66,7 @@ XMLHttpRequest.prototype.open = function(method, url) {
 const XMLHttpRequest_send = XMLHttpRequest.prototype.send
 XMLHttpRequest.prototype.send = function(body) {
   if (
-    !config.enabled || !body ||
+    !config.enabled || typeof body != 'string' || !body ||
     // @ts-expect-error
     this._method != 'POST' || !this._url
   ) return XMLHttpRequest_send.apply(this, [body])
@@ -123,8 +128,8 @@ const config = {
   debugLogTimelineStats: false,
   // Shared
   addAddMutedWordMenuItem: true,
-  addFocusedTweetAccountLocation: false,
-  alwaysUseLatestTweets: true,
+  addFocusedTweetAccountLocation: true,
+  alwaysUseLatestTweets: false,
   bypassAgeVerification: true,
   darkModeTheme: 'lightsOut',
   defaultToLatestSearch: false,
@@ -149,7 +154,7 @@ const config = {
   hideEditImage: true,
   hideExplorePageContents: true,
   hideFollowingMetrics: true,
-  hideForYouTimeline: true,
+  hideForYouTimeline: false,
   hideGrokNav: true,
   hideGrokTweets: false,
   hideHistoryNav: false,
@@ -181,8 +186,17 @@ const config = {
   hideUnavailableQuoteTweets: true,
   hideVerifiedNotificationsTab: true,
   hideViewActivityLinks: true,
-  hideViews: true,
+  hideViews: false,
   hideWhoToFollowEtc: true,
+  inlineReplies: true,
+  autoTranslateReplies: true,
+  askAboutPosts: true,
+  askOpenInReader: true,
+  inlineReplyActions: true,
+  keyboardShortcuts: true,
+  quoteTweetPreview: true,
+  hoverImagePreview: true,
+  compactNavigation: true,
   listRetweets: 'ignore',
   mutableQuoteTweets: true,
   mutedQuotes: [],
@@ -193,7 +207,7 @@ const config = {
   restoreOtherInteractionLinks: true,
   restoreQuoteTweetsLink: true,
   restoreTweetSource: true,
-  retweets: 'separate',
+  retweets: 'ignore',
   revertMediaCarousel: true,
   revertProfileTabs: false,
   revertTwemoji: true,
@@ -204,8 +218,8 @@ const config = {
   showPremiumReplyFollowedBy: true,
   showPremiumReplyFollowing: true,
   showPremiumReplyGovernment: true,
-  sortFollowing: 'mostRecent',
-  sortReplies: 'relevant',
+  sortFollowing: 'popular',
+  sortReplies: 'liked',
   tweakQuoteTweetsPage: true,
   twitterBlueChecks: 'replace',
   unblurSensitiveContent: false,
@@ -2807,23 +2821,30 @@ function getNotificationCount() {
   return state.badgeCount.unreadDMCount + state.badgeCount.unreadNTabCount;
 }
 
+/**
+ * Headers needed to call Twitter's API with the current user's session.
+ */
+function getApiHeaders() {
+  let csrfToken = document.cookie.split('; ').find(c => c.startsWith('ct0='))?.split('=')[1]
+  return {
+    'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
+    'content-type': 'application/json',
+    'x-twitter-active-user': 'yes',
+    'x-twitter-auth-type': 'OAuth2Session',
+    'x-twitter-client-language': lang,
+    ...(csrfToken && {'x-csrf-token': csrfToken}),
+  }
+}
+
 let accountLocationCache = new Map()
 
 async function getAccountLocation(screenName) {
   if (!accountLocationCache.has(screenName)) {
-    let csrfToken = document.cookie.split('; ').find(c => c.startsWith('ct0='))?.split('=')[1]
     let response = await fetch(
       `/i/api/graphql/XRqGa7EeokUU5kppkh13EA/AboutAccountQuery?variables=${encodeURIComponent(JSON.stringify({screenName}))}`,
       {
         credentials: 'include',
-        headers: {
-          'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
-          'content-type': 'application/json',
-          'x-twitter-active-user': 'yes',
-          'x-twitter-auth-type': 'OAuth2Session',
-          'x-twitter-client-language': lang,
-          ...(csrfToken && {'x-csrf-token': csrfToken}),
-        }
+        headers: getApiHeaders(),
       }
     )
     if (response.ok) {
@@ -4319,6 +4340,2323 @@ function interceptMediaButton() {
 }
 //#endregion
 
+//#region Inline replies
+const INLINE_REPLIES_PAGE_SIZE = 5
+
+/** Clicks on these parts of a timeline tweet keep their default behaviour */
+const INLINE_REPLIES_IGNORE_CLICK_SELECTOR = [
+  'a',
+  'button',
+  'input',
+  'textarea',
+  'select',
+  'label',
+  'audio',
+  'video',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[data-testid="tweetPhoto"]',
+  '[data-testid="videoPlayer"]',
+  '[data-testid="card.wrapper"]',
+].join(', ')
+
+/** Tweet language codes which aren't a language */
+const NON_LANGUAGE_CODES = new Set(['art', 'qam', 'qct', 'qht', 'qme', 'qst', 'und', 'zxx'])
+
+/**
+ * The TweetDetail request used to fetch replies. These defaults are updated
+ * from Twitter's own requests, so the query id and features keep up with
+ * Twitter's changes once you've viewed any tweet.
+ */
+let tweetDetailRequest = {
+  path: '/i/api/graphql/wjV7NuWEsHgTBFfW3zYKzQ/TweetDetail',
+  features: '{"rweb_video_screen_enabled":false,"rweb_cashtags_enabled":true,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":true,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"rweb_cashtags_composer_attachment_enabled":true,"responsive_web_jetfuel_frame":true,"rweb_sports_post_context_enabled":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"rweb_conversational_replies_downvote_enabled":false,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_nested_quote_preview_enabled":true,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":true,"responsive_web_enhance_cards_enabled":false}',
+  fieldToggles: '{"withPayments":false,"withDmBlocks":false,"withArticleRichContentState":true,"withArticlePlainText":false,"withArticleSummaryText":true,"withArticleVoiceOver":true,"withGrokAnalyze":false,"withDisallowedReplyControls":false}',
+}
+
+/**
+ * Replies loaded for each tweet id.
+ * @type {Map<string, import("./types").InlineReplies>}
+ */
+let inlineReplies = new Map()
+
+/**
+ * Every reply we've loaded, by id.
+ * @type {Map<string, import("./types").InlineReply>}
+ */
+let inlineReplyTweets = new Map()
+
+/**
+ * Translations requested for replies, by id.
+ * @type {Map<string, import("./types").InlineReplyTranslation>}
+ */
+let inlineReplyTranslations = new Map()
+
+/**
+ * Ids of replies and reader posts whose replies are currently expanded.
+ * @type {Set<string>}
+ */
+let expandedInlineReplies = new Set()
+
+/**
+ * Ids of timeline posts whose replies are expanded below them. Kept apart from
+ * expandedInlineReplies, so expanding a post in the reader doesn't also expand
+ * it in the timeline.
+ * @type {Set<string>}
+ */
+let expandedTimelinePosts = new Set()
+
+/** @param {string} url */
+function rememberTweetDetailRequest(url) {
+  try {
+    let request = new URL(url, location.origin)
+    let features = request.searchParams.get('features')
+    if (!features) return
+    tweetDetailRequest = {
+      path: request.pathname,
+      features,
+      fieldToggles: request.searchParams.get('fieldToggles') || tweetDetailRequest.fieldToggles,
+    }
+  } catch (e) {
+    warn('inlineReplies: error reading TweetDetail request', e)
+  }
+}
+
+/**
+ * @param {string} tag
+ * @param {{[key: string]: any}} [props]
+ * @param {...any} children
+ * @returns {HTMLElement}
+ */
+function createEl(tag, props = {}, ...children) {
+  let $el = document.createElement(tag)
+  for (let [key, value] of Object.entries(props)) {
+    if (value == null || value === false) continue
+    if (key == 'className') {
+      $el.className = value
+    } else if (key == 'dataset') {
+      Object.assign($el.dataset, value)
+    } else {
+      $el.setAttribute(key, value === true ? '' : value)
+    }
+  }
+  $el.append(...children.flat().filter(child => child != null && child !== false))
+  return $el
+}
+
+/**
+ * Gets the id and path of a timeline tweet from its timestamp link, ignoring
+ * any quoted tweet.
+ * @param {Element} $tweet
+ * @returns {?{id: string, path: string}}
+ */
+function getTweetPermalink($tweet) {
+  for (let $time of $tweet.querySelectorAll('a[href*="/status/"] > time')) {
+    let $link = /** @type {HTMLAnchorElement} */ ($time.parentElement)
+    if ($link.parentElement.closest('[role="link"]')) continue
+    let match = $link.pathname.match(URL_TWEET_BASE_RE)
+    if (match) return {id: match[2], path: `/${match[1]}/status/${match[2]}`}
+  }
+  return null
+}
+
+/**
+ * Gets a link card's text, which often explains what a post is about.
+ * @param {any} card
+ * @returns {import("./types").InlineReply['card']}
+ */
+function parseTweetCard(card) {
+  let values = card?.legacy?.binding_values
+  if (!Array.isArray(values)) return null
+  let get = key => values.find(value => value.key == key)?.value?.string_value
+  let title = get('title')
+  let description = get('description')
+  if (!title && !description) return null
+  return {title: title || null, description: description || null, domain: get('vanity_url') || get('domain') || null}
+}
+
+/**
+ * @param {any} card
+ * @returns {import("./types").InlineReply['poll']}
+ */
+function parseTweetPoll(card) {
+  let values = card?.legacy?.binding_values
+  if (!/^poll\dchoice/.test(card?.legacy?.name) || !Array.isArray(values)) return null
+  let get = key => values.find(value => value.key == key)?.value
+  let choices = []
+  for (let i = 1; get(`choice${i}_label`); i++) {
+    choices.push({label: get(`choice${i}_label`).string_value, count: Number(get(`choice${i}_count`)?.string_value) || 0})
+  }
+  if (choices.length == 0) return null
+  let endsAt = get('end_datetime_utc')?.string_value
+  return {
+    choices,
+    endsAt: endsAt ? new Date(endsAt) : null,
+    final: Boolean(get('counts_are_final')?.boolean_value),
+    // 1-based, only present once you've voted
+    selected: Number(get('selected_choice')?.string_value) || null,
+  }
+}
+
+/**
+ * @param {any} result a tweet result from Twitter's GraphQL API
+ * @returns {?import("./types").InlineReply}
+ */
+function parseInlineReply(result, depth = 0) {
+  // The tweet inside a visibility wrapper (e.g. when replies are limited) has
+  // no __typename of its own
+  if (result?.__typename == 'TweetWithVisibilityResults') result = {__typename: 'Tweet', ...result.tweet}
+  if (result?.__typename != 'Tweet' || !result.legacy) return null
+  let legacy = result.legacy
+  let user = result.core?.user_results?.result
+  let screenName = user?.core?.screen_name ?? user?.legacy?.screen_name
+  let id = legacy.id_str || result.rest_id
+  if (!screenName || !id) return null
+  let note = result.note_tweet?.note_tweet_results?.result
+  // A quoted post's own quote comes as nested_quoted_tweet_results
+  let quotedResult = result.quoted_status_result ?? result.nested_quoted_tweet_results
+  let quoted = depth < 3 ? parseInlineReply(quotedResult?.result, depth + 1) : null
+  return {
+    id,
+    path: `/${screenName}/status/${id}`,
+    inReplyToId: legacy.in_reply_to_status_id_str ?? null,
+    inReplyToScreenName: legacy.in_reply_to_screen_name ?? null,
+    screenName,
+    name: user?.core?.name ?? user?.legacy?.name ?? screenName,
+    avatarUrl: user?.avatar?.image_url ?? user?.legacy?.profile_image_url_https ?? null,
+    createdAt: new Date(legacy.created_at),
+    lang: legacy.lang ?? null,
+    text: note?.text ?? legacy.full_text ?? '',
+    entities: note ? note.entity_set : legacy.entities,
+    displayTextRange: note ? null : legacy.display_text_range ?? null,
+    media: legacy.extended_entities?.media ?? [],
+    possiblySensitive: Boolean(legacy.possibly_sensitive),
+    likeCount: legacy.favorite_count ?? 0,
+    liked: Boolean(legacy.favorited),
+    replyCount: legacy.reply_count ?? 0,
+    quoteCount: legacy.quote_count ?? 0,
+    quotedId: quoted?.id || legacy.quoted_status_id_str || null,
+    isTranslatable: Boolean(result.is_translatable),
+    card: parseTweetCard(result.card),
+    poll: parseTweetPoll(result.card),
+    quoted,
+    quoteUnavailable: depth < 3 && Boolean(quotedResult && !quoted),
+  }
+}
+
+/**
+ * @param {string} tweetId
+ * @param {?string} cursor
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{replies: import("./types").InlineReply[], tweets: import("./types").InlineReply[], cursor: ?string}>}
+ */
+async function fetchInlineReplies(tweetId, cursor, signal) {
+  let variables = {
+    focalTweetId: tweetId,
+    ...(cursor && {cursor, referrer: 'tweet'}),
+    with_rux_injections: false,
+    rankingMode: {liked: 'Likes', recent: 'Recency'}[config.sortReplies] || 'Relevance',
+    includePromotedContent: false,
+    withCommunity: true,
+    withQuickPromoteEligibilityTweetFields: false,
+    withBirdwatchNotes: true,
+    withVoice: true,
+  }
+  let params = new URLSearchParams({
+    variables: JSON.stringify(variables),
+    features: tweetDetailRequest.features,
+    fieldToggles: tweetDetailRequest.fieldToggles,
+  })
+  let response = await fetch(`${tweetDetailRequest.path}?${params}`, {
+    credentials: 'include',
+    headers: getApiHeaders(),
+    signal,
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  let body = await response.json()
+  let instructions = body.data?.threaded_conversation_with_injections_v2?.instructions
+  if (!Array.isArray(instructions)) {
+    throw new Error(body.errors?.[0]?.message || 'unexpected response')
+  }
+
+  let replies = []
+  let tweets = []
+  let seen = new Set()
+  let nextCursor = null
+  for (let instruction of instructions) {
+    let entries = instruction.type == 'TimelineAddEntries' ? instruction.entries : (
+      instruction.type == 'TimelineReplaceEntry' ? [instruction.entry] : []
+    )
+    let items = instruction.type == 'TimelineAddToModule' ? instruction.moduleItems || [] : []
+    for (let entry of entries || []) {
+      let content = entry?.content
+      if (!content) continue
+      let itemContent = content.itemContent || content
+      if (itemContent.cursorType == 'Bottom' || entry.entryId?.startsWith('cursor-bottom-')) {
+        nextCursor = itemContent.value ?? null
+      }
+      items = items.concat(content.items || [{item: {itemContent}}])
+    }
+    for (let item of items) {
+      let content = item.item?.itemContent || item.itemContent
+      if (!content || content.promotedMetadata) continue
+      let reply = parseInlineReply(content.tweet_results?.result)
+      if (reply && !seen.has(reply.id)) {
+        tweets.push(reply)
+        seen.add(reply.id)
+      }
+      // Modules can include the focal tweet, ancestors and grandchildren.
+      // Show only direct replies, wherever they occur in a module.
+      if (reply?.inReplyToId == tweetId) replies.push(reply)
+    }
+  }
+  return {replies, tweets, cursor: nextCursor}
+}
+
+/**
+ * Gets loaded replies for a tweet, starting to load them if necessary.
+ * @param {string} tweetId
+ * @param {string} path
+ * @param {?number} replyCount
+ */
+function getInlineReplies(tweetId, path, replyCount) {
+  let state = inlineReplies.get(tweetId)
+  if (!state) {
+    state = {status: 'loaded', path, replies: [], replyCount, shown: 0, cursor: null, fetched: false}
+    inlineReplies.set(tweetId, state)
+    loadMoreInlineReplies(tweetId)
+  }
+  return state
+}
+
+/** @param {string} tweetId */
+async function loadMoreInlineReplies(tweetId) {
+  let state = inlineReplies.get(tweetId)
+  if (!state || state.status == 'loading') return
+  state.status = 'loading'
+  renderInlineReplies(tweetId)
+  try {
+    let previousCursor = state.fetched ? state.cursor : null
+    let {replies, cursor} = await fetchInlineReplies(tweetId, previousCursor)
+    // A setting change may have discarded this request while it was loading.
+    if (inlineReplies.get(tweetId) !== state) return
+    let seen = new Set(state.replies.map(reply => reply.id))
+    for (let reply of replies) {
+      inlineReplyTweets.set(reply.id, reply)
+      if (!seen.has(reply.id)) {
+        state.replies.push(reply)
+        seen.add(reply.id)
+      }
+    }
+    // Filtered or duplicate-only pages can still lead to further replies.
+    // A repeated cursor, however, would just fetch the same page forever.
+    state.cursor = cursor != previousCursor ? cursor : null
+    state.shown = Math.min(state.replies.length, state.shown + INLINE_REPLIES_PAGE_SIZE)
+    state.fetched = true
+    state.status = 'loaded'
+    log('inlineReplies: loaded', replies.length, 'replies to', tweetId)
+  } catch (e) {
+    if (inlineReplies.get(tweetId) !== state) return
+    error('inlineReplies: error loading replies to', tweetId, e)
+    state.status = 'error'
+    state.error = String(e?.message || e)
+  }
+  renderInlineReplies(tweetId)
+}
+
+/** @param {string} tweetId */
+function showMoreInlineReplies(tweetId) {
+  let state = inlineReplies.get(tweetId)
+  if (!state) return
+  if (state.shown < state.replies.length) {
+    state.shown = Math.min(state.replies.length, state.shown + INLINE_REPLIES_PAGE_SIZE)
+    renderInlineReplies(tweetId)
+  } else if (state.cursor || state.status == 'error') {
+    loadMoreInlineReplies(tweetId)
+  }
+}
+
+/**
+ * Translates replies in other languages as they're shown, like X does for
+ * posts in the timeline. Deferred so cards aren't replaced while rendering.
+ * @param {import("./types").InlineReply} reply
+ */
+function autoTranslateInlineReply(reply) {
+  if (!config.autoTranslateReplies || inlineReplyTranslations.has(reply.id) || !isInlineReplyTranslatable(reply)) return
+  inlineReplyTranslations.set(reply.id, {status: 'loading', shown: true})
+  queueMicrotask(() => {
+    inlineReplyTranslations.delete(reply.id)
+    toggleInlineReplyTranslation(reply.id)
+  })
+}
+
+/** @param {string} replyId */
+async function toggleInlineReplyTranslation(replyId) {
+  let translation = inlineReplyTranslations.get(replyId)
+  if (translation?.status == 'loading') return
+  if (translation?.status == 'loaded') {
+    translation.shown = !translation.shown
+    updateInlineReplyCards(replyId)
+    return
+  }
+
+  translation = {status: 'loading', shown: true}
+  inlineReplyTranslations.set(replyId, translation)
+  updateInlineReplyCards(replyId)
+  try {
+    let response = await fetch(
+      `/i/api/1.1/strato/column/None/tweetId=${replyId},destinationLanguage=None,translationSource=Some(X),feature=None,timeout=None,onlyCached=None/translation/service/translateTweet`,
+      {
+        credentials: 'include',
+        headers: getApiHeaders(),
+      }
+    )
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    let body = await response.json()
+    if (body.translationState != 'Success') throw new Error(body.translationState || 'translation failed')
+    Object.assign(translation, {
+      status: 'loaded',
+      text: body.translation,
+      entities: body.entities,
+      sourceLanguage: body.localizedSourceLanguage,
+    })
+  } catch (e) {
+    error('inlineReplies: error translating', replyId, e)
+    translation.status = 'error'
+  }
+  updateInlineReplyCards(replyId)
+}
+
+/** @param {string} text */
+function unescapeTweetText(text) {
+  return text.replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({
+    amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'",
+  })[entity])
+}
+
+/**
+ * Renders tweet text with links for its entities. Entity indices count code
+ * points, not UTF-16 code units.
+ * @param {string} text
+ * @param {any} entities
+ * @param {?[number, number]} displayTextRange
+ */
+function renderTweetText(text, entities, displayTextRange) {
+  let chars = Array.from(text)
+  let [start, end] = displayTextRange || [0, chars.length]
+  /** @type {{indices: [number, number], $el: ?HTMLElement}[]} */
+  let items = []
+  for (let url of entities?.urls || []) {
+    items.push({indices: url.indices, $el: createEl('a', {
+      href: url.expanded_url || url.url,
+      target: '_blank',
+      rel: 'noopener noreferrer',
+    }, url.display_url || url.expanded_url || url.url)})
+  }
+  for (let mention of entities?.user_mentions || []) {
+    items.push({indices: mention.indices, $el: createEl('a', {href: `/${mention.screen_name}`}, `@${mention.screen_name}`)})
+  }
+  for (let hashtag of entities?.hashtags || []) {
+    items.push({indices: hashtag.indices, $el: createEl('a', {href: `/hashtag/${encodeURIComponent(hashtag.text)}`}, `#${hashtag.text}`)})
+  }
+  for (let symbol of entities?.symbols || []) {
+    items.push({indices: symbol.indices, $el: createEl('a', {href: `/search?q=${encodeURIComponent(`$${symbol.text}`)}&src=cashtag_click`}, `$${symbol.text}`)})
+  }
+  // Media links are replaced by the media itself
+  for (let media of entities?.media || []) {
+    items.push({indices: media.indices, $el: null})
+  }
+  items = items
+    .filter(item => Array.isArray(item.indices) && item.indices[0] >= start && item.indices[1] <= end)
+    .sort((a, b) => a.indices[0] - b.indices[0])
+
+  let $fragment = document.createDocumentFragment()
+  let pos = start
+  for (let {indices: [itemStart, itemEnd], $el} of items) {
+    if (itemStart < pos) continue
+    $fragment.append(unescapeTweetText(chars.slice(pos, itemStart).join('')))
+    if ($el) $fragment.append($el)
+    pos = itemEnd
+  }
+  $fragment.append(unescapeTweetText(chars.slice(pos, end).join('').trimEnd()))
+  return $fragment
+}
+
+/** @param {Date} date */
+function formatInlineReplyTime(date) {
+  let seconds = Math.max(0, (Date.now() - date.getTime()) / 1000)
+  if (seconds < 60) return `${Math.floor(seconds)}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+  return date.toLocaleDateString(lang, {
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() != new Date().getFullYear() && {year: 'numeric'}),
+  })
+}
+
+/** @param {number} count */
+function formatInlineReplyCount(count) {
+  try {
+    return new Intl.NumberFormat(lang, {notation: 'compact'}).format(count)
+  } catch (e) {
+    return String(count)
+  }
+}
+
+/** Replies with a like or unlike request in flight */
+let pendingInlineReplyLikes = new Set()
+
+/**
+ * Likes or unlikes a reply with the same GraphQL mutation Twitter uses,
+ * updating its card straight away.
+ * @param {string} replyId
+ */
+async function toggleInlineReplyLike(replyId) {
+  let reply = inlineReplyTweets.get(replyId)
+  if (!reply || pendingInlineReplyLikes.has(replyId)) return
+  let operation = reply.liked ? 'UnfavoriteTweet' : 'FavoriteTweet'
+  let native = getNativePreviewApi()
+  let queryId = native?.operations?.[operation]
+  if (!queryId) {
+    warn(`inlineReplies: ${operation} isn't available, opening the tweet instead`)
+    window.open(reply.path, '_blank')
+    return
+  }
+  let liked = !reply.liked
+  let update = () => {
+    reply.liked = liked
+    reply.likeCount = Math.max(0, reply.likeCount + (liked ? 1 : -1))
+    updateInlineReplyCards(replyId)
+  }
+  update()
+  pendingInlineReplyLikes.add(replyId)
+  try {
+    let path = `/i/api/graphql/${queryId}/${operation}`
+    let headers = getApiHeaders()
+    headers['x-client-transaction-id'] = await native.transaction(location.origin, path.replace(/^\/i\/api/, ''), 'POST')
+    let response = await fetch(path, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify({variables: {tweet_id: replyId}, queryId}),
+    })
+    let body = await response.json().catch(() => null)
+    if (!response.ok || body?.errors?.length) throw new Error(body?.errors?.[0]?.message || `HTTP ${response.status}`)
+  } catch (e) {
+    error(`inlineReplies: error with ${operation} for`, replyId, e)
+    liked = !liked
+    update()
+  } finally {
+    pendingInlineReplyLikes.delete(replyId)
+  }
+}
+
+/**
+ * Opens Twitter's own reply composer in a small window, so the timeline stays
+ * where it is.
+ * @param {string} replyId
+ */
+function replyToInlineReply(replyId) {
+  window.open(`/intent/post?in_reply_to=${encodeURIComponent(replyId)}`, 'cpftReply', 'popup,width=600,height=560')
+}
+
+/** @param {import("./types").InlineReply} reply */
+function isInlineReplyTranslatable(reply) {
+  if (reply.isTranslatable) return true
+  return Boolean(reply.lang) && !NON_LANGUAGE_CODES.has(reply.lang) && reply.lang != lang?.split('-')[0]
+}
+
+/**
+ * @param {import("./types").InlineReply} reply
+ * @param {{showReplies?: boolean, showAskPanel?: boolean}} [options] answers which belong
+ *   in the reader only show there
+ */
+function createInlineReply(reply, {showReplies = true, showAskPanel = !askPanelsInReader.has(reply.id)} = {}) {
+  let isExpanded = showReplies && expandedInlineReplies.has(reply.id)
+  let hasReplies = showReplies && (reply.replyCount > 0 || inlineReplies.has(reply.id))
+  autoTranslateInlineReply(reply)
+  let translation = inlineReplyTranslations.get(reply.id)
+  let showTranslation = translation?.status == 'loaded' && translation.shown
+
+  // Like X's own translations: the translated text replaces the original, with
+  // a note above it to switch back.
+  let $translationNote = null
+  if (translation?.status == 'loaded') {
+    $translationNote = createEl('div', {className: 'cpftInlineReplyNote'},
+      showTranslation && `Translated from ${translation.sourceLanguage} · `,
+      createEl('button', {type: 'button', dataset: {action: 'translate'}}, showTranslation ? 'Show original' : 'Show translation'),
+    )
+  } else if (translation?.status == 'loading') {
+    $translationNote = createEl('div', {className: 'cpftInlineReplyNote'}, 'Translating…')
+  } else if (translation?.status == 'error') {
+    $translationNote = createEl('div', {className: 'cpftInlineReplyNote'},
+      'Couldn\'t translate this tweet · ',
+      createEl('button', {type: 'button', dataset: {action: 'translate'}}, 'Try again'),
+    )
+  }
+
+  let toggleLabel = isExpanded ? 'Hide replies' : (
+    config.hideReplyMetrics || reply.replyCount == 0
+      ? 'Show replies'
+      : `${formatInlineReplyCount(reply.replyCount)} ${reply.replyCount == 1 ? 'reply' : 'replies'}`
+  )
+
+  return createEl('div', {
+    className: `cpftInlineReply${hasReplies ? ' cpftHasReplies' : ''}`,
+    dataset: {tweetId: reply.id},
+  },
+    // Focusable for keyboard shortcuts
+    createEl('div', {className: 'cpftInlineReplyTweet', tabindex: config.keyboardShortcuts ? '0' : null},
+      createEl('a', {className: 'cpftInlineReplyAvatar', href: `/${reply.screenName}`},
+        reply.avatarUrl && createEl('img', {src: reply.avatarUrl, alt: '', loading: 'lazy'}),
+      ),
+      createEl('div', {className: 'cpftInlineReplyMain'},
+        createEl('div', {className: 'cpftInlineReplyHeader'},
+          createEl('a', {className: 'cpftInlineReplyName', href: `/${reply.screenName}`, dir: 'auto'}, reply.name),
+          createEl('span', {className: 'cpftInlineReplyHandle'}, `@${reply.screenName}`),
+          createEl('span', {}, '·'),
+          createEl('a', {className: 'cpftInlineReplyTime', href: reply.path, title: reply.createdAt.toLocaleString(lang)}, formatInlineReplyTime(reply.createdAt)),
+        ),
+        $translationNote,
+        createEl('div', {className: 'cpftInlineReplyText', lang: showTranslation ? null : reply.lang, dir: 'auto'},
+          showTranslation
+            ? renderTweetText(translation.text, translation.entities, null)
+            : renderTweetText(reply.text, reply.entities, reply.displayTextRange),
+        ),
+        reply.media.length > 0 && createEl('div', {
+          className: `cpftInlineReplyMedia${reply.possiblySensitive && !config.unblurSensitiveContent ? ' cpftSensitive' : ''}`,
+        },
+          reply.media.map((media, index) => createEl('a', {
+            href: `${reply.path}/${media.type == 'photo' ? 'photo' : 'video'}/${index + 1}`,
+            className: 'cpftInlineReplyMediaItem',
+          },
+            createEl('img', {src: `${media.media_url_https}?name=small`, alt: media.ext_alt_text || '', loading: 'lazy'}),
+            media.type != 'photo' && createEl('span', {className: 'cpftInlineReplyPlay'}, '▶'),
+          ))
+        ),
+        reply.poll && createInlineReplyPoll(reply),
+        reply.quoted && createEl('a', {className: 'cpftInlineReplyQuote', href: reply.quoted.path, dir: 'auto'},
+          createEl('b', {}, `@${reply.quoted.screenName}`), ' ', reply.quoted.text,
+        ),
+        !reply.quoted && !reply.quoteUnavailable && reply.quotedId && createEl('a', {className: 'cpftInlineReplyQuote', href: `/i/status/${reply.quotedId}`}, 'View quoted tweet →'),
+        createEl('div', {className: 'cpftInlineReplyActions'},
+          hasReplies && createEl('button', {type: 'button', dataset: {action: 'toggle'}}, toggleLabel),
+          config.quoteTweetPreview && reply.quoteCount > 0 && createEl('button', {type: 'button', dataset: {action: 'quotes'}}, config.hideQuoteTweetMetrics ? 'Quotes' : `${formatInlineReplyCount(reply.quoteCount)} Quotes`),
+          config.inlineReplyActions && createEl('button', {
+            type: 'button', className: 'cpftInlineReplyAction', 'aria-label': 'Reply', title: 'Reply', dataset: {action: 'reply'},
+          }, createSvgIcon(REPLY_ICON_PATH)),
+          config.inlineReplyActions ? createEl('button', {
+            type: 'button',
+            className: `cpftInlineReplyAction cpftLike${reply.liked ? ' cpftLiked' : ''}`,
+            'aria-label': reply.liked ? 'Unlike' : 'Like',
+            'aria-pressed': String(reply.liked),
+            title: reply.liked ? 'Unlike' : 'Like',
+            dataset: {action: 'like'},
+          },
+            createSvgIcon(reply.liked ? LIKED_ICON_PATH : LIKE_ICON_PATH),
+            !config.hideLikeMetrics && reply.likeCount > 0 && createEl('span', {}, formatInlineReplyCount(reply.likeCount)),
+          ) : !config.hideLikeMetrics && reply.likeCount > 0 && createEl('span', {}, `♥ ${formatInlineReplyCount(reply.likeCount)}`),
+          !translation && isInlineReplyTranslatable(reply) && createEl('button', {type: 'button', dataset: {action: 'translate'}}, 'Translate tweet'),
+          config.askAboutPosts && createAskButton(reply.id, reply.path),
+        ),
+        showAskPanel && createAskPanel(reply.id),
+      ),
+    ),
+    isExpanded && createInlineRepliesContainer(reply.id, reply.path, reply.replyCount),
+  )
+}
+
+/** @param {Date} endsAt */
+function formatPollTimeLeft(endsAt) {
+  let minutes = Math.max(1, Math.round((endsAt.getTime() - Date.now()) / 60000))
+  let [count, unit] = minutes < 60 ? [minutes, 'minute'] : minutes < 1440 ? [Math.round(minutes / 60), 'hour'] : [Math.round(minutes / 1440), 'day']
+  return `${count} ${unit}${count == 1 ? '' : 's'} left`
+}
+
+/**
+ * Polls are read-only here. Like X, an open poll's results stay hidden until
+ * you've voted, with a link to vote on the post itself.
+ * @param {import("./types").InlineReply} reply
+ */
+function createInlineReplyPoll(reply) {
+  let {choices, endsAt, final, selected} = reply.poll
+  let total = choices.reduce((sum, choice) => sum + choice.count, 0)
+  let open = !final && endsAt != null && endsAt.getTime() > Date.now()
+  let showResults = !open || selected != null
+  let top = Math.max(...choices.map(choice => choice.count))
+  return createEl('div', {className: `cpftInlineReplyPoll${showResults ? ' cpftPollResults' : ''}`},
+    choices.map((choice, index) => {
+      let percent = total ? Math.round(choice.count / total * 1000) / 10 : 0
+      return createEl('div', {
+        className: `cpftPollChoice${showResults && total && choice.count == top ? ' cpftPollLeading' : ''}`,
+        style: showResults ? `--cpft-poll-percent: ${percent}%` : null,
+      },
+        createEl('span', {dir: 'auto'}, choice.label, selected == index + 1 && ' ✓'),
+        showResults && createEl('span', {}, `${percent}%`),
+      )
+    }),
+    createEl('div', {className: 'cpftInlineReplyPollInfo'},
+      `${formatInlineReplyCount(total)} ${total == 1 ? 'vote' : 'votes'} · `,
+      open ? [formatPollTimeLeft(endsAt), selected == null && ' · ', selected == null && createEl('a', {href: reply.path}, 'Vote on X')] : 'Final results',
+    ),
+  )
+}
+
+/**
+ * @param {string} tweetId
+ * @param {string} path
+ * @param {?number} replyCount
+ */
+function createInlineRepliesContainer(tweetId, path, replyCount) {
+  let $container = createEl('div', {className: 'cpftReplies', dataset: {tweetId}})
+  getInlineReplies(tweetId, path, replyCount)
+  fillInlineReplies($container, tweetId)
+  return $container
+}
+
+/**
+ * @param {HTMLElement} $container
+ * @param {string} tweetId
+ */
+function fillInlineReplies($container, tweetId) {
+  let state = inlineReplies.get(tweetId)
+  $container.replaceChildren()
+  if (!state) return
+
+  for (let reply of state.replies.slice(0, state.shown)) {
+    $container.append(createInlineReply(reply))
+  }
+
+  let hasMore = state.shown < state.replies.length || Boolean(state.cursor)
+  let $status = createEl('div', {className: 'cpftInlineRepliesStatus'})
+  $container.setAttribute('aria-busy', String(state.status == 'loading'))
+  $status.setAttribute('role', 'status')
+  $status.setAttribute('aria-live', 'polite')
+  if (state.status == 'loading') {
+    $status.append('Loading replies…')
+  }
+  else if (state.status == 'error') {
+    $status.append(
+      `Couldn't load replies (${state.error}). `,
+      createEl('button', {type: 'button', dataset: {action: 'more', tweetId}}, 'Try again'),
+      ' · ',
+      createEl('a', {href: state.path}, 'Open tweet'),
+    )
+  }
+  else if (hasMore) {
+    $status.append(createEl('button', {type: 'button', dataset: {action: 'more', tweetId}}, getString('SHOW_MORE_REPLIES')))
+  }
+  else if (state.replies.length == 0) {
+    $status.append('No replies to show · ', createEl('a', {href: state.path}, 'Open tweet'))
+  }
+  // Collapse from the bottom of the replies without scrolling back up
+  if ($status.childNodes.length > 0) $status.append(' · ')
+  $status.append(createEl('button', {type: 'button', dataset: {action: 'collapse'}}, 'Hide replies'))
+  $container.append($status)
+}
+
+/** @param {string} tweetId */
+function renderInlineReplies(tweetId) {
+  for (let $container of document.querySelectorAll(`.cpftReplies[data-tweet-id="${tweetId}"]`)) {
+    fillInlineReplies(/** @type {HTMLElement} */ ($container), tweetId)
+  }
+}
+
+/** @param {string} replyId */
+function updateInlineReplyCards(replyId) {
+  let reply = inlineReplyTweets.get(replyId)
+  if (!reply) return
+  for (let $reply of document.querySelectorAll(`.cpftInlineReply[data-tweet-id="${replyId}"]`)) {
+    $reply.replaceWith($reply.classList.contains('cpftQuoteListItem') ? createQuoteListItem(reply) : $reply.classList.contains('cpftReaderPost')
+      ? createQuoteReaderPost(reply, Number(/** @type {HTMLElement} */ ($reply).dataset.quoteDepth || 0))
+      : createInlineReply(reply))
+  }
+}
+
+/**
+ * Scrolls back up to an element if collapsing replies left it above the
+ * timeline header.
+ * @param {Element} $el
+ */
+function keepInlineRepliesInView($el) {
+  if (!$el?.isConnected) return
+  let $header = document.querySelector(mobile ? Selectors.MOBILE_TIMELINE_HEADER : Selectors.DESKTOP_TIMELINE_HEADER)
+  let headerBottom = Math.max(0, $header?.getBoundingClientRect().bottom ?? 0)
+  let top = $el.getBoundingClientRect().top
+  if (top < headerBottom) {
+    window.scrollBy(0, top - headerBottom)
+  }
+}
+
+/**
+ * @param {Element} $tweet
+ * @param {string} tweetId
+ * @param {string} path
+ */
+function addTimelineInlineReplies($tweet, tweetId, path) {
+  let $container = createInlineRepliesContainer(tweetId, path, getTweetInfo(tweetId)?.reply_count ?? null)
+  $container.classList.add('cpftRepliesRoot')
+  let $tweetText = $tweet.querySelector('[data-testid="tweetText"]')
+  $container.style.fontFamily = getComputedStyle($tweetText || $tweet).fontFamily
+  $container.addEventListener('click', onInlineRepliesClick)
+  $tweet.after($container)
+}
+
+/**
+ * @param {Element} $tweet
+ * @param {{id: string, path: string}} permalink
+ */
+function toggleTimelineInlineReplies($tweet, {id, path}) {
+  if (expandedTimelinePosts.has(id)) {
+    log('inlineReplies: collapsing', id)
+    expandedTimelinePosts.delete(id)
+    if ($tweet.nextElementSibling?.classList.contains('cpftRepliesRoot')) {
+      $tweet.nextElementSibling.remove()
+    }
+    keepInlineRepliesInView($tweet)
+  } else {
+    log('inlineReplies: expanding', id)
+    expandedTimelinePosts.add(id)
+    addTimelineInlineReplies($tweet, id, path)
+  }
+}
+
+/**
+ * Twitter re-renders timeline items as they scroll in and out of view, so put
+ * back any expanded replies which were removed.
+ * @param {HTMLElement} $timeline
+ */
+function restoreTimelineInlineReplies($timeline) {
+  if (!config.enabled || !config.inlineReplies || isOnIndividualTweetPage()) return
+  for (let $tweet of $timeline.querySelectorAll(Selectors.TWEET)) {
+    let permalink = getTweetPermalink($tweet)
+    let $container = /** @type {HTMLElement} */ ($tweet.nextElementSibling)
+    if ($container?.classList.contains('cpftRepliesRoot')) {
+      if (permalink && $container.dataset.tweetId == permalink.id && expandedTimelinePosts.has(permalink.id)) continue
+      // Twitter may recycle the tweet element for a different post.
+      $container.remove()
+    }
+    if (permalink && expandedTimelinePosts.has(permalink.id)) {
+      addTimelineInlineReplies($tweet, permalink.id, permalink.path)
+    }
+  }
+}
+
+function removeTimelineInlineReplies({clearCache = true} = {}) {
+  expandedTimelinePosts.clear()
+  document.querySelectorAll('.cpftRepliesRoot').forEach($el => $el.remove())
+  if (clearCache) {
+    expandedInlineReplies.clear()
+    inlineReplies.clear()
+    inlineReplyTweets.clear()
+    inlineReplyTranslations.clear()
+  }
+}
+
+/** @param {MouseEvent} e */
+function onInlineRepliesClick(e) {
+  if (e.defaultPrevented || e.button != 0 || !(e.target instanceof Element)) return
+  let hasModifier = e.ctrlKey || e.metaKey || e.shiftKey || e.altKey
+
+  let $link = /** @type {HTMLAnchorElement} */ (e.target.closest('a[href]'))
+  if ($link) {
+    // Navigate within the app for internal links
+    if ($link.origin == location.origin && $link.target != '_blank' && !hasModifier && History_push) {
+      e.preventDefault()
+      e.stopPropagation()
+      History_push({
+        pathname: $link.pathname,
+        hash: '',
+        query: {},
+        search: $link.search,
+      })
+    }
+    return
+  }
+
+  let $button = /** @type {HTMLElement} */ (e.target.closest('button[data-action]'))
+  let $reply = /** @type {HTMLElement} */ (e.target.closest('.cpftInlineReply'))
+  if ($button) {
+    e.preventDefault()
+    e.stopPropagation()
+    let {action} = $button.dataset
+    if (action == 'more') {
+      showMoreInlineReplies($button.dataset.tweetId)
+    } else if (action == 'collapse') {
+      let $container = $button.closest('.cpftReplies')
+      if ($container.classList.contains('cpftRepliesRoot')) {
+        let $tweet = $container.previousElementSibling
+        let permalink = $tweet && getTweetPermalink($tweet)
+        if (permalink) toggleTimelineInlineReplies($tweet, permalink)
+      } else if ($reply) {
+        toggleInlineReplyReplies($reply)
+      }
+    } else if (action == 'translate' && $reply) {
+      toggleInlineReplyTranslation($reply.dataset.tweetId)
+    } else if (action == 'toggle' && $reply) {
+      toggleInlineReplyReplies($reply)
+    } else if (action == 'like' && $reply) {
+      toggleInlineReplyLike($reply.dataset.tweetId)
+    } else if (action == 'reply' && $reply) {
+      replyToInlineReply($reply.dataset.tweetId)
+    } else if (action == 'quotes' && $reply) {
+      let reply = inlineReplyTweets.get($reply.dataset.tweetId)
+      if (reply) openQuoteList(reply)
+    }
+    return
+  }
+
+  // Clicking anywhere else on a reply toggles its replies
+  if (e.target.closest('button, video, audio, input, select, [contenteditable]')) return
+  if (!$reply || !e.target.closest('.cpftInlineReplyTweet')) return
+  if (!window.getSelection()?.isCollapsed) return
+  e.stopPropagation()
+  if (hasModifier) {
+    let reply = inlineReplyTweets.get($reply.dataset.tweetId)
+    if (reply) window.open(reply.path, '_blank')
+    return
+  }
+  if ($reply.classList.contains('cpftHasReplies')) {
+    toggleInlineReplyReplies($reply)
+  }
+}
+
+/** @param {HTMLElement} $reply */
+function toggleInlineReplyReplies($reply) {
+  let replyId = $reply.dataset.tweetId
+  let collapsing = expandedInlineReplies.has(replyId)
+  log(`inlineReplies: ${collapsing ? 'collapsing' : 'expanding'}`, replyId)
+  if (collapsing) {
+    expandedInlineReplies.delete(replyId)
+  } else {
+    expandedInlineReplies.add(replyId)
+  }
+  // Remember where the clicked reply is, as it will be replaced
+  let $parent = $reply.parentElement
+  let index = Array.prototype.indexOf.call($parent.children, $reply)
+  updateInlineReplyCards(replyId)
+  if (collapsing) {
+    keepInlineRepliesInView($parent.children[index])
+  }
+}
+
+/**
+ * Clicking on a tweet in a timeline expands its replies below it instead of
+ * navigating to the tweet's page.
+ */
+function interceptTimelineTweetClicks() {
+  document.addEventListener('click', (e) => {
+    if (!config.enabled || !config.inlineReplies) return
+    if (e.defaultPrevented) return
+    if (e.button != 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+    if (!(e.target instanceof Element)) return
+    if (isOnIndividualTweetPage()) return
+
+    let $tweet = e.target.closest(Selectors.TWEET)
+    if (!$tweet || !$tweet.closest(Selectors.TIMELINE)) return
+    if (e.target.closest(INLINE_REPLIES_IGNORE_CLICK_SELECTOR)) return
+    // Don't toggle when the user is selecting text
+    if (!window.getSelection()?.isCollapsed) return
+
+    let permalink = getTweetPermalink($tweet)
+    if (!permalink) return
+
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    toggleTimelineInlineReplies($tweet, permalink)
+  }, true)
+}
+//#endregion
+
+//#region Quote reader and image previews
+/** @type {HTMLElement} */
+let $quoteReader = null
+/** @type {HTMLElement} */
+let $quoteReturnFocus = null
+/** @type {import('./types').QuoteReaderState} */
+let quoteReaderState = null
+let quoteReaderOriginPath = ''
+/** @type {import('./types').QuoteReaderState[]} */
+let quoteReaderHistory = []
+/** @type {AbortController} */
+let quoteReaderRequest = null
+/** @type {Map<string, import('./types').QuoteConversation>} */
+let quoteConversationCache = new Map()
+
+// SearchTimeline is also the endpoint used by Twitter's native quote list.
+// Its query id is refreshed whenever the user performs a native search.
+let quoteSearchRequest = {path: '/i/api/graphql/BYppgupFFS2yqVmmRNjlsw/SearchTimeline', features: null, fieldToggles: null}
+let nativePreviewApi = null
+
+/**
+ * Search requires the transaction header generated by Twitter's own client.
+ * Reuse its loaded implementation rather than reproducing its rotating logic.
+ * This uses the page's existing runtime, as our normalized tweet access does.
+ */
+function getNativePreviewApi() {
+  if (nativePreviewApi) return nativePreviewApi
+  let chunks = window['webpackChunk_twitter_responsive_web']
+  if (!Array.isArray(chunks) || chunks.push === Array.prototype.push) return null
+  let runtime
+  chunks.push([[`cpft-reader-${Date.now()}`], {}, require => { runtime = require }])
+  if (!runtime?.m) return null
+  let transaction
+  /** Query ids of the GraphQL operations we call, which change with Twitter's releases */
+  let operations = {SearchTimeline: null, FavoriteTweet: null, UnfavoriteTweet: null}
+  let wanted = Object.keys(operations).length
+  for (let [id, factory] of Object.entries(runtime.m)) {
+    let source = String(factory)
+    if (source.includes('rweb_client_transaction_id_enabled') && source.includes('x-client-transaction-id')) {
+      let exports = runtime(id)
+      transaction = Object.values(exports).find(value => typeof value == 'function' && value.constructor.name == 'AsyncFunction' && value.length == 3)
+    }
+    let name = source.match(/operationName:["'](SearchTimeline|FavoriteTweet|UnfavoriteTweet)["']/)?.[1]
+    if (name && !operations[name]) {
+      let operation = runtime(id)
+      operations[name] = operation.queryId || operation.default?.queryId || null
+      if (operations[name]) wanted--
+    }
+    if (transaction && wanted == 0) break
+  }
+  if (transaction) nativePreviewApi = {transaction, queryId: operations.SearchTimeline, operations}
+  return nativePreviewApi
+}
+
+/** @param {string} url */
+function rememberQuoteSearchRequest(url) {
+  try {
+    let request = new URL(url, location.origin)
+    quoteSearchRequest = {
+      path: request.pathname,
+      features: request.searchParams.get('features'),
+      fieldToggles: request.searchParams.get('fieldToggles'),
+    }
+  } catch (e) {
+    warn('quoteReader: could not read search query', e)
+  }
+}
+
+/** @param {string} tweetId @param {?string} cursor @param {AbortSignal} signal */
+async function fetchQuoteList(tweetId, cursor, signal) {
+  let native = getNativePreviewApi()
+  if (native?.queryId) quoteSearchRequest.path = `/i/api/graphql/${native.queryId}/SearchTimeline`
+  let headers = getApiHeaders()
+  if (native) headers['x-client-transaction-id'] = await native.transaction(location.origin, quoteSearchRequest.path.replace(/^\/i\/api/, ''), 'GET')
+  signal?.throwIfAborted()
+  let params = new URLSearchParams({
+    variables: JSON.stringify({rawQuery: `quoted_tweet_id:${tweetId} OR url:"status/${tweetId}/video" OR url:"status/${tweetId}/photo"`, count: 20, querySource: 'tdqt', product: 'Latest', ...(cursor && {cursor})}),
+    features: quoteSearchRequest.features || tweetDetailRequest.features,
+    fieldToggles: quoteSearchRequest.fieldToggles || tweetDetailRequest.fieldToggles,
+  })
+  let response = await fetch(`${quoteSearchRequest.path}?${params}`, {credentials: 'include', headers, signal})
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  let body = await response.json()
+  let instructions = body.data?.search_by_raw_query?.search_timeline?.timeline?.instructions
+  if (!Array.isArray(instructions)) throw new Error(body.errors?.[0]?.message || 'Could not load Quote Tweets')
+  let quotes = []
+  let nextCursor = null
+  for (let instruction of instructions) {
+    let entries = instruction.entries || (instruction.entry ? [instruction.entry] : [])
+    let items = instruction.moduleItems || []
+    for (let entry of entries) {
+      let content = entry.content?.itemContent || entry.content
+      if (!content) continue
+      if (content.cursorType == 'Bottom' || entry.entryId?.startsWith('cursor-bottom-')) nextCursor = content.value || null
+      items = items.concat(entry.content.items || [{item: {itemContent: content}}])
+    }
+    for (let item of items) {
+      let content = item.item?.itemContent || item.itemContent
+      if (content?.promotedMetadata) continue
+      let quote = parseInlineReply(content?.tweet_results?.result)
+      if (!quote) continue
+      let sharesMedia = (quote.entities?.urls || []).some(entity => {
+        try {
+          let url = new URL(entity.expanded_url || entity.unwound_url)
+          return /^(?:www\.|mobile\.)?(?:x|twitter)\.com$/.test(url.hostname) && new RegExp(`^/\\w+/status/${tweetId}/(?:photo|video)(?:/\\d+)?/?$`).test(url.pathname)
+        } catch { return false }
+      })
+      if (quote.quotedId == tweetId || sharesMedia) quotes.push(quote)
+    }
+  }
+  return {quotes, cursor: nextCursor}
+}
+
+function rememberQuoteReaderView() {
+  if (!quoteReaderState) return
+  quoteReaderState.scrollTop = $quoteReader?.querySelector('.cpftQuoteReaderBody')?.scrollTop || 0
+  quoteReaderHistory.push(quoteReaderState)
+  if (quoteReaderHistory.length > 20) quoteReaderHistory.shift()
+}
+
+/** @param {{id: string, path: string}} target */
+function openQuoteList(target) {
+  if (!config.enabled || !config.quoteTweetPreview) return
+  rememberQuoteReaderView()
+  quoteReaderRequest?.abort()
+  hideImagePreview()
+  quoteReaderOriginPath = location.pathname
+  quoteReaderState = {id: target.id, path: target.path, mode: 'quotes', status: 'loaded', quotes: [], cursor: null, fetched: false, resolveQuote: false, scrollTop: 0}
+  loadMoreQuotePosts()
+}
+
+async function loadMoreQuotePosts() {
+  let state = quoteReaderState
+  if (!state || state.mode != 'quotes' || state.status == 'loading') return
+  if (state.fetched && !state.cursor && state.status != 'error') return
+  state.scrollTop = $quoteReader?.querySelector('.cpftQuoteReaderBody')?.scrollTop || state.scrollTop
+  state.status = 'loading'
+  quoteReaderRequest?.abort()
+  quoteReaderRequest = new AbortController()
+  let signal = quoteReaderRequest.signal
+  renderQuoteReader()
+  try {
+    let previousCursor = state.cursor
+    let {quotes, cursor} = await fetchQuoteList(state.id, previousCursor, signal)
+    if (signal.aborted || quoteReaderState !== state) return
+    let seen = new Set(state.quotes.map(quote => quote.id))
+    for (let quote of quotes) {
+      if (seen.has(quote.id)) continue
+      cacheReaderTweet(quote)
+      state.quotes.push(quote)
+      seen.add(quote.id)
+    }
+    state.cursor = cursor != previousCursor ? cursor : null
+    state.fetched = true
+    state.status = 'loaded'
+  } catch (e) {
+    if (signal.aborted || quoteReaderState !== state) return
+    state.status = 'error'
+    state.error = e?.message || String(e)
+  }
+  renderQuoteReader()
+}
+
+function backInQuoteReader() {
+  hideImagePreview()
+  let previous = quoteReaderHistory.pop()
+  if (!previous) return
+  quoteReaderRequest?.abort()
+  if (previous.mode == 'quotes') {
+    quoteReaderState = previous
+    if (previous.status == 'loading') {
+      previous.status = 'loaded'
+      loadMoreQuotePosts()
+    } else renderQuoteReader()
+  } else openQuoteReader(previous, {push: false, resolveQuote: previous.resolveQuote, scrollTop: previous.scrollTop})
+}
+
+/** @param {import('./types').InlineReply} tweet */
+function createQuoteListItem(tweet) {
+  cacheReaderTweet(tweet)
+  let $post = createInlineReply(tweet, {showReplies: false})
+  $post.classList.add('cpftQuoteListItem')
+  let $main = $post.querySelector(':scope > .cpftInlineReplyTweet > .cpftInlineReplyMain')
+  $main.querySelector(':scope > .cpftInlineReplyQuote')?.remove()
+  $main.querySelector(':scope > .cpftInlineReplyMedia')?.replaceWith(createReaderMedia(tweet))
+  // Keep it on one line with the post's other actions
+  $main.querySelector(':scope > .cpftInlineReplyActions').append(
+    createEl('button', {type: 'button', className: 'cpftReaderReadPost', dataset: {readerAction: 'open', tweetId: tweet.id, path: tweet.path}}, 'Read tweet →'))
+  return $post
+}
+
+/** @param {import('./types').InlineReply} tweet */
+function cacheReaderTweet(tweet) {
+  inlineReplyTweets.set(tweet.id, tweet)
+  if (tweet.quoted) cacheReaderTweet(tweet.quoted)
+}
+
+/**
+ * @param {string} tweetId
+ * @param {AbortSignal} signal
+ * @returns {Promise<import('./types').QuoteConversation>}
+ */
+async function getQuoteConversation(tweetId, signal) {
+  let cached = quoteConversationCache.get(tweetId)
+  if (cached) return cached
+  let {tweets, replies, cursor} = await fetchInlineReplies(tweetId, null, signal)
+  signal.throwIfAborted()
+  let byId = new Map(tweets.map(tweet => [tweet.id, tweet]))
+  let tweet = byId.get(tweetId)
+  if (!tweet) throw new Error('This tweet is unavailable or could not be loaded')
+  let ancestors = []
+  let seen = new Set([tweetId])
+  let parentId = tweet.inReplyToId
+  while (parentId && byId.has(parentId) && !seen.has(parentId)) {
+    let parent = byId.get(parentId)
+    seen.add(parentId)
+    ancestors.unshift(parent)
+    parentId = parent.inReplyToId
+  }
+  let conversation = {tweet, ancestors, replies, cursor}
+  quoteConversationCache.set(tweetId, conversation)
+  // Keep long timeline sessions bounded. Currently open views retain their data.
+  if (quoteConversationCache.size > 30) {
+    quoteConversationCache.delete(quoteConversationCache.keys().next().value)
+  }
+  return conversation
+}
+
+/**
+ * Quote cards have no href on current Twitter, so first use the parent tweet's
+ * normalized entity. Media/timestamp links also work without React state.
+ * @param {Element} $target
+ * @returns {?{id: string, path: string, resolveQuote: boolean | number, source: HTMLElement}}
+ */
+function getQuotePreviewTarget($target) {
+  // Video posters and player surfaces need the same native click handling as
+  // their controls, including before X has mounted the actual video element.
+  let videoSelector = 'video, [data-testid="videoPlayer"], [data-testid="videoComponent"], [data-testid="previewInterstitial"], [data-testid="playButton"]'
+  if ($target.closest(videoSelector) || $target.closest('[data-testid="tweetPhoto"]')?.querySelector(videoSelector)) return null
+  let $custom = /** @type {HTMLAnchorElement} */ ($target.closest('a.cpftInlineReplyQuote'))
+  if ($custom) {
+    let match = $custom.pathname.match(URL_TWEET_BASE_RE)
+    return match ? {id: match[2], path: $custom.pathname, resolveQuote: false, source: $custom} : null
+  }
+  // Respect real links and native controls within a quoted card.
+  if ($target.closest('a, button, video, input, [role="button"]')) return null
+  let $tweet = $target.closest(Selectors.TWEET)
+  if (!$tweet) return null
+  let $quote = /** @type {HTMLElement} */ ($target.closest('div[role="link"]'))
+  if (!$quote || !$tweet.contains($quote) || !$quote.querySelector('[data-testid="User-Name"] time')) return null
+  let owner = getTweetPermalink($tweet)
+  if (!owner) return null
+  // A quoted post can show its own quoted post inside it, so work out which
+  // level was clicked: 1 for the post's quote, 2 for the quote's quote.
+  let depth = 0
+  for (let $el = /** @type {Element} */ ($quote); $el && $el !== $tweet; $el = $el.parentElement) {
+    if ($el.matches('div[role="link"]')) depth++
+  }
+  let quoteId = null
+  for (let id = owner.id, level = 0; id && level < depth; level++) {
+    let info = getTweetInfo(id)
+    id = info?.quoted_status_id_str || info?.quoted_status?.id_str || null
+    quoteId = id
+  }
+  if (quoteId) return {id: quoteId, path: `/i/status/${quoteId}`, resolveQuote: false, source: $quote}
+  // Only use links belonging to this level, not to a quote nested inside it
+  let $link = /** @type {HTMLAnchorElement} */ (Array.from($quote.querySelectorAll('a:has(time), a[href*="/photo/"], a[href*="/video/"]'))
+    .find($a => $a.closest('div[role="link"]') === $quote))
+  let match = $link?.pathname.match(URL_TWEET_BASE_RE)
+  if (match) return {id: match[2], path: `/${match[1]}/status/${match[2]}`, resolveQuote: false, source: $quote}
+  // If the normalized cache is missing, resolve the quote from its owner.
+  return {...owner, resolveQuote: depth, source: $quote}
+}
+
+/**
+ * @param {{id: string, path: string}} target
+ * @param {{push?: boolean, resolveQuote?: boolean | number, scrollTop?: number | null, title?: string}} options
+ */
+async function openQuoteReader(target, {push = true, resolveQuote = false, scrollTop = null, title} = {}) {
+  if (!config.enabled || !config.quoteTweetPreview) return
+  quoteReaderOriginPath = location.pathname
+  hideImagePreview()
+  if (push) rememberQuoteReaderView()
+  quoteReaderRequest?.abort()
+  quoteReaderRequest = new AbortController()
+  let signal = quoteReaderRequest.signal
+  let state = {id: target.id, path: target.path, title, status: /** @type {const} */ ('loading'), scrollTop: scrollTop || 0, focusOnLoad: scrollTop == null, resolveQuote}
+  quoteReaderState = state
+  renderQuoteReader()
+  try {
+    let conversation = await getQuoteConversation(target.id, signal)
+    if (resolveQuote) {
+      // true or 1 is the post's quote, 2 is that quote's quote
+      let quoted = conversation.tweet
+      for (let level = 0; level < Number(resolveQuote); level++) quoted = quoted?.quoted
+      if (!quoted) throw new Error('The quoted tweet is unavailable')
+      // Show the full detail response for the quoted post, including ancestors.
+      conversation = await getQuoteConversation(quoted.id, signal)
+    }
+    if (signal.aborted || quoteReaderState !== state) return
+    for (let post of [conversation.tweet, ...conversation.ancestors, ...conversation.replies]) cacheReaderTweet(post)
+    let tweet = conversation.tweet
+    // Reuse the initial reply page if the reader's replies are expanded later.
+    if (!inlineReplies.has(tweet.id)) {
+      inlineReplies.set(tweet.id, {
+        status: 'loaded', path: tweet.path,
+        replies: Array.from(new Map(conversation.replies.map(reply => [reply.id, reply])).values()),
+        replyCount: tweet.replyCount, shown: Math.min(INLINE_REPLIES_PAGE_SIZE, conversation.replies.length),
+        cursor: conversation.cursor, fetched: true,
+      })
+    }
+    // The conversation request already contains the first reply page, so show
+    // it immediately when selecting a post without making another API call.
+    // Back navigation keeps any explicit collapse the user made in that view.
+    if (state.focusOnLoad && (tweet.replyCount > 0 || conversation.replies.length > 0 || conversation.cursor)) {
+      expandedInlineReplies.add(tweet.id)
+    }
+    Object.assign(state, {id: tweet.id, path: tweet.path, status: 'loaded', resolveQuote: false, conversation})
+  } catch (e) {
+    if (signal.aborted || quoteReaderState !== state) return
+    Object.assign(state, {status: 'error', error: e?.message || String(e)})
+  }
+  renderQuoteReader()
+}
+
+function closeQuoteReader({restoreFocus = true} = {}) {
+  quoteReaderRequest?.abort()
+  quoteReaderRequest = null
+  quoteReaderState = null
+  quoteReaderOriginPath = ''
+  quoteReaderHistory = []
+  $quoteReader?.remove()
+  $quoteReader = null
+  // Answers shown in the reader close with it
+  for (let tweetId of askPanelsInReader) {
+    openAskPanels.delete(tweetId)
+    askPanelsInReader.delete(tweetId)
+    renderAskPanels(tweetId)
+  }
+  if (restoreFocus && $quoteReturnFocus?.isConnected) $quoteReturnFocus.focus({preventScroll: true})
+  $quoteReturnFocus = null
+}
+
+/** @param {string} source @param {string} [size] */
+function getPreviewImageUrl(source, size = 'orig') {
+  if (typeof source != 'string' || !source) return null
+  try {
+    let url = new URL(source, location.origin)
+    if (!['https:', 'http:'].includes(url.protocol)) return null
+    if (url.hostname == 'pbs.twimg.com' && url.pathname.startsWith('/media/')) {
+      // Old media URLs encode the size after a colon instead of in the query.
+      url.pathname = url.pathname.replace(/:(?:thumb|small|medium|large|orig)$/, '')
+      url.searchParams.set('name', size)
+    }
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+/** @param {import('./types').InlineReply} tweet */
+function createReaderMedia(tweet) {
+  let $media = createEl('div', {className: 'cpftReaderMedia'})
+  let photoCount = tweet.media.filter(media => media.type == 'photo').length
+  let $photos = createEl('div', {className: 'cpftReaderPhotoGrid', dataset: {photoCount}})
+  for (let [index, media] of tweet.media.entries()) {
+    let poster = getPreviewImageUrl(media.media_url_https, 'large')
+    if (media.type == 'photo') {
+      if (!$photos.parentElement) $media.append($photos)
+      $photos.append(createEl('a', {className: 'cpftReaderPhoto', href: `${tweet.path}/photo/${index + 1}`, 'aria-label': media.ext_alt_text || `Photo ${index + 1} of ${photoCount}`},
+        createEl('img', {src: poster, alt: media.ext_alt_text || 'Tweet image', loading: 'lazy', decoding: 'async', width: media.original_info?.width || media.sizes?.large?.w, height: media.original_info?.height || media.sizes?.large?.h})))
+    } else {
+      let variants = (media.video_info?.variants || [])
+        .filter(variant => variant.content_type == 'video/mp4' && getPreviewImageUrl(variant.url))
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))
+      let variant = variants.find(variant => variant.bitrate <= 2176000) || variants[variants.length - 1]
+      if (variant) {
+        $media.append(createEl('video', {
+          controls: true, playsinline: true, preload: 'none', poster,
+          ...(media.type == 'animated_gif' && {loop: true, muted: true}),
+        }, createEl('source', {src: variant.url, type: 'video/mp4'})))
+      }
+      $media.append(createEl('a', {className: 'cpftReaderMediaFallback', href: `${tweet.path}/video/${index + 1}`}, 'Open video on X ↗'))
+    }
+  }
+  if (tweet.possiblySensitive && !config.unblurSensitiveContent) {
+    let $reveal = createEl('button', {type: 'button', className: 'cpftReaderReveal'}, 'Show sensitive media')
+    $media.classList.add('cpftReaderSensitive')
+    $reveal.addEventListener('click', () => {
+      $media.classList.remove('cpftReaderSensitive')
+      $reveal.remove()
+    })
+    $media.prepend($reveal)
+  }
+  return $media
+}
+
+/** @param {import('./types').InlineReply} tweet @param {number} [depth] */
+function createQuoteReaderPost(tweet, depth = 0) {
+  cacheReaderTweet(tweet)
+  let $post = createInlineReply(tweet, {showAskPanel: true})
+  $post.classList.add('cpftReaderPost')
+  $post.dataset.quoteDepth = String(depth)
+  let $main = $post.querySelector(':scope > .cpftInlineReplyTweet > .cpftInlineReplyMain')
+  let $media = $main.querySelector(':scope > .cpftInlineReplyMedia')
+  if ($media) $media.replaceWith(createReaderMedia(tweet))
+  let $quote = $main.querySelector(':scope > .cpftInlineReplyQuote')
+  if ($quote && tweet.quoted && depth < 3) {
+    $quote.replaceWith(createEl('div', {className: 'cpftReaderEmbeddedQuote'},
+      createEl('button', {type: 'button', className: 'cpftReaderContextLink', dataset: {readerAction: 'open', tweetId: tweet.quoted.id, path: tweet.quoted.path}}, 'Quoted tweet ↗'),
+      createQuoteReaderPost(tweet.quoted, depth + 1)))
+  }
+  if (tweet.quoteUnavailable) $main.append(createEl('p', {className: 'cpftReaderNote'}, 'Quoted tweet unavailable'))
+  return $post
+}
+
+function positionQuoteReader() {
+  if (!$quoteReader) return
+  let $sidebar = document.querySelector(Selectors.SIDEBAR)
+  let rect = $sidebar?.getBoundingClientRect()
+  let search = $sidebar?.querySelector('form[role="search"]')?.getBoundingClientRect()
+  let anchored = rect && rect.width >= 280 && rect.left >= 0 && rect.right <= innerWidth + 1 && getComputedStyle($sidebar).display != 'none'
+  let width = anchored ? rect.width : Math.min(440, innerWidth - 24)
+  let top = anchored ? Math.max(12, search?.bottom || 52) + 12 : 64
+  top = Math.min(top, Math.max(12, innerHeight - 200))
+  Object.assign($quoteReader.style, {
+    left: `${anchored ? rect.left : Math.max(12, innerWidth - width - 12)}px`,
+    top: `${top}px`, width: `${width}px`, maxHeight: `${innerHeight - top - 12}px`,
+  })
+  $quoteReader.classList.toggle('cpftReaderFloating', !anchored)
+}
+
+function renderQuoteReader() {
+  let state = quoteReaderState
+  if (!state) return
+  let created = !$quoteReader
+  if (created) {
+    $quoteReader = createEl('aside', {id: 'cpftQuoteReader', role: 'region', 'aria-labelledby': 'cpftQuoteReaderTitle', tabindex: '-1'})
+    $quoteReader.addEventListener('click', onQuoteReaderClick)
+    document.body.append($quoteReader)
+  }
+  let $body = createEl('div', {className: 'cpftQuoteReaderBody', 'aria-busy': String(state.status == 'loading')})
+  let $header = createEl('div', {className: 'cpftQuoteReaderHeader'},
+    // Icons rather than ← and × characters, which fonts don't centre
+    createEl('button', {type: 'button', disabled: quoteReaderHistory.length == 0, 'aria-label': 'Back to previous quoted tweet', title: 'Back', dataset: {readerAction: 'back'}}, createSvgIcon(BACK_ICON_PATH)),
+    createEl('h2', {id: 'cpftQuoteReaderTitle'}, state.mode == 'quotes' ? 'Quote Tweets' : state.title || 'Quoted tweet'),
+    createEl('a', {href: state.mode == 'quotes' ? `${state.path}/quotes` : state.path, target: '_blank', rel: 'noopener noreferrer', className: 'cpftReaderOpen', title: 'Open in a new tab'}, 'Open ↗'),
+    createEl('button', {type: 'button', 'aria-label': 'Close quote reader', title: 'Close (Esc)', dataset: {readerAction: 'close'}}, createSvgIcon(CLOSE_ICON_PATH)))
+  if (state.mode == 'quotes') {
+    $body.append(createEl('p', {className: 'cpftReaderSectionLabel'}, 'Quote Tweets available on X · newest first'))
+    for (let quote of state.quotes) $body.append(createQuoteListItem(quote))
+    let $footer = createEl('div', {className: 'cpftQuoteListFooter', role: 'status', 'aria-live': 'polite'})
+    if (state.status == 'loading') $footer.append('Loading Quote Tweets…')
+    else if (state.status == 'error') $footer.append(createEl('p', {}, `Couldn’t load Quote Tweets (${state.error}).`), createEl('button', {type: 'button', dataset: {readerAction: 'more-quotes'}}, 'Try again'))
+    else if (state.cursor) {
+      if (state.quotes.length == 0) $footer.append(createEl('p', {}, 'No Quote Tweets on this page. Check the next page for more.'))
+      $footer.append(createEl('button', {type: 'button', dataset: {readerAction: 'more-quotes'}}, 'Show more Quote Tweets'))
+    }
+    else $footer.append(state.quotes.length ? 'You’ve reached the end of the available Quote Tweets.' : 'No Quote Tweets available to show.')
+    $body.append($footer)
+  } else if (state.status == 'loading') {
+    $body.append(createEl('div', {className: 'cpftReaderLoading', role: 'status'}, 'Loading quoted tweet…'),
+      createEl('div', {className: 'cpftReaderSkeleton', 'aria-hidden': 'true'}))
+  } else if (state.status == 'error') {
+    $body.append(createEl('div', {className: 'cpftReaderEmpty', role: 'status'},
+      createEl('p', {}, state.error),
+      createEl('button', {type: 'button', dataset: {readerAction: 'retry'}}, 'Try again'),
+      ' · ', createEl('a', {href: state.path, target: '_blank', rel: 'noopener noreferrer'}, 'Open tweet on X ↗')))
+  } else {
+    let {tweet, ancestors} = state.conversation
+    let oldest = ancestors[0] || tweet
+    if (oldest.inReplyToId) {
+      $body.append(createEl('button', {type: 'button', className: 'cpftReaderContextLink', dataset: {
+        readerAction: 'open', tweetId: oldest.inReplyToId,
+        path: `/${oldest.inReplyToScreenName || 'i'}/status/${oldest.inReplyToId}`,
+      }}, 'View earlier conversation ↑'))
+    }
+    if (ancestors.length) {
+      let $context = createEl('div', {className: 'cpftReaderAncestors'},
+        createEl('p', {className: 'cpftReaderSectionLabel'}, 'Earlier in this conversation'))
+      for (let ancestor of ancestors) $context.append(createQuoteReaderPost(ancestor))
+      $body.append($context)
+    }
+    let $focus = createEl('div', {className: 'cpftReaderFocus'},
+      ancestors.length > 0 && createEl('button', {type: 'button', className: 'cpftReaderContextLink', dataset: {readerAction: 'context-top'}}, 'Earlier conversation ↑'),
+      createQuoteReaderPost(tweet))
+    $body.append($focus)
+  }
+  $quoteReader.replaceChildren($header, $body)
+  $body.scrollTop = state.scrollTop
+  positionQuoteReader()
+  if (state.focusOnLoad && state.status == 'loaded') {
+    let $focus = /** @type {HTMLElement} */ ($body.querySelector('.cpftReaderFocus'))
+    if ($focus) $body.scrollTop = Math.max(0, $focus.offsetTop - $body.offsetTop)
+    state.focusOnLoad = false
+    state.scrollTop = $body.scrollTop
+  }
+  if (created) $quoteReader.focus({preventScroll: true})
+}
+
+/** @param {MouseEvent} e */
+function onQuoteReaderClick(e) {
+  if (!(e.target instanceof Element) || e.button != 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+  let $button = /** @type {HTMLElement} */ (e.target.closest('[data-reader-action]'))
+  if ($button) {
+    e.preventDefault()
+    e.stopPropagation()
+    let {readerAction, tweetId, path} = $button.dataset
+    if (readerAction == 'close') closeQuoteReader()
+    else if (readerAction == 'open') openQuoteReader({id: tweetId, path})
+    else if (readerAction == 'retry' && quoteReaderState) openQuoteReader(quoteReaderState, {push: false, resolveQuote: quoteReaderState.resolveQuote})
+    else if (readerAction == 'back') backInQuoteReader()
+    else if (readerAction == 'more-quotes') loadMoreQuotePosts()
+    else if (readerAction == 'context-top') $quoteReader.querySelector('.cpftQuoteReaderBody').scrollTop = 0
+    return
+  }
+  let $quoteItem = /** @type {HTMLElement} */ (e.target.closest('.cpftQuoteListItem'))
+  if ($quoteItem && !e.target.closest('a, button, video, input') && window.getSelection()?.isCollapsed) {
+    let post = inlineReplyTweets.get($quoteItem.dataset.tweetId)
+    if (post) { e.stopPropagation(); openQuoteReader(post); return }
+  }
+  onInlineRepliesClick(e)
+}
+
+/** @type {{source: HTMLElement, image: HTMLImageElement, overlay: HTMLElement, timer: ReturnType<typeof setTimeout>} | null} */
+let imagePreview = null
+
+/** @type {?{x: number, y: number}} */
+let lastPointerPosition = null
+
+/** A photo whose preview was dismissed, which stays closed until the pointer leaves it */
+let dismissedPreviewSource = null
+
+/** @param {HTMLElement} $el */
+function isUnderPointer($el) {
+  if (!lastPointerPosition || !$el.isConnected) return false
+  let rect = $el.getBoundingClientRect()
+  let {x, y} = lastPointerPosition
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+}
+
+function hideImagePreview() {
+  if (!imagePreview) return
+  clearTimeout(imagePreview.timer)
+  imagePreview.overlay.remove()
+  imagePreview = null
+}
+
+/** @param {Element} $target @returns {?{source: HTMLElement, image: HTMLImageElement}} */
+function getHoverImage($target) {
+  let $source = /** @type {HTMLElement} */ ($target.closest('[data-testid="tweetPhoto"], .cpftInlineReplyMediaItem, .cpftReaderPhoto'))
+  if (!$source && $target.matches('a[href*="/photo/"]')) $source = $target.querySelector('[data-testid="tweetPhoto"]')
+  if (!$source || $source.closest('.cpftSensitive, .cpftReaderSensitive')) return null
+  // Twitter also uses tweetPhoto for unplayed video posters. The media URL and
+  // native player/interstitial markers distinguish them from actual photos.
+  if ($source.closest('[data-testid="videoPlayer"], [data-testid="videoComponent"]') ||
+      $source.querySelector('video, [data-testid="previewInterstitial"], [data-testid="playButton"], [data-testid="videoPlayer"]')) return null
+  if ($source.classList.contains('cpftInlineReplyMediaItem') && !$source.getAttribute('href')?.includes('/photo/')) return null
+  let $image = $source.querySelector('img')
+  if (!$image || !getPreviewImageUrl($image.currentSrc || $image.src)) return null
+  if (/\/(?:amplify_video_thumb|ext_tw_video_thumb|tweet_video_thumb|video_thumb)\//.test($image.currentSrc || $image.src)) return null
+  if (Array.from($source.querySelectorAll('img, div')).some($el => getComputedStyle($el).filter.includes('blur('))) return null
+  // Do not turn a hover into a way to reveal blurred native media.
+  for (let $el = /** @type {Element} */ ($source), i = 0; $el && i < 6; $el = $el.parentElement, i++) {
+    if (getComputedStyle($el).filter.includes('blur(')) return null
+  }
+  return {source: $source, image: $image}
+}
+
+/** @param {HTMLElement} source @param {HTMLImageElement} image */
+function showImagePreview(source, image) {
+  if (imagePreview?.source == source) return
+  hideImagePreview()
+  let overlay = createEl('div', {id: 'cpftImagePreview', role: 'tooltip', 'aria-label': image.alt || 'Image preview'})
+  let preview = {source, image, overlay, timer: null}
+  imagePreview = preview
+  preview.timer = setTimeout(() => {
+    if (imagePreview !== preview) return
+    if (!source.isConnected) {
+      // X re-rendered the photo under a still pointer, so use the new one
+      hideImagePreview()
+      let $under = lastPointerPosition && document.elementFromPoint(lastPointerPosition.x, lastPointerPosition.y)
+      let target = $under && getHoverImage($under)
+      if (target) showImagePreview(target.source, target.image)
+      return
+    }
+    let $image = /** @type {HTMLImageElement} */ (createEl('img', {alt: image.alt || '', decoding: 'async'}))
+    $image.addEventListener('load', () => {
+      if (imagePreview !== preview || !source.isConnected) return
+      let scale = Math.min(1, Math.min(1100, innerWidth - 32) / $image.naturalWidth, (innerHeight - 48) / $image.naturalHeight)
+      let width = Math.round($image.naturalWidth * scale)
+      let height = Math.round($image.naturalHeight * scale)
+      let rect = source.getBoundingClientRect()
+      let left = rect.right + 16
+      if (left + width + 16 > innerWidth) left = rect.left - width - 32
+      if (left < 12) left = (innerWidth - width - 16) / 2
+      let top = Math.min(Math.max(12, rect.top + rect.height / 2 - height / 2), innerHeight - height - 28)
+      Object.assign(overlay.style, {left: `${Math.max(8, left)}px`, top: `${Math.max(8, top)}px`})
+      Object.assign($image.style, {width: `${width}px`, height: `${height}px`})
+      overlay.append($image)
+      document.body.append(overlay)
+    })
+    $image.addEventListener('error', () => { if (imagePreview === preview) hideImagePreview() })
+    $image.src = getPreviewImageUrl(image.currentSrc || image.src)
+  }, 180)
+}
+
+function interceptQuoteAndImagePreviews() {
+  let keyboardFocus = false
+  function previewClick(e) {
+    if (!config.enabled || !config.quoteTweetPreview || e.defaultPrevented) return
+    if (e.type == 'click' && e.button != 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+    if (e.type == 'keydown' && e.key != 'Enter' && e.key != ' ') return
+    if (!(e.target instanceof Element) || !window.getSelection()?.isCollapsed) return
+    let $quotesButton = /** @type {HTMLElement} */ (e.target.closest('button[data-cpft-quotes]'))
+    let $quotesLink = /** @type {HTMLAnchorElement} */ (e.target.closest('a[href$="/quotes"]'))
+    let quotesLinkMatch = $quotesLink?.pathname.match(URL_TWEET_BASE_RE)
+    if ($quotesButton || quotesLinkMatch && e.type == 'click' && $quotesLink.target != '_blank') {
+      if (e.type == 'keydown') return // Let native buttons synthesize their click.
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      $quoteReturnFocus = $quotesButton || $quotesLink
+      openQuoteList($quotesButton ? {id: $quotesButton.dataset.tweetId, path: $quotesButton.dataset.path} : {id: quotesLinkMatch[2], path: $quotesLink.pathname.replace(/\/quotes$/, '')})
+      return
+    }
+    let target = getQuotePreviewTarget(e.target)
+    if (!target) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    $quoteReturnFocus = target.source
+    openQuoteReader(target, {resolveQuote: target.resolveQuote})
+  }
+  document.addEventListener('click', previewClick, true)
+  document.addEventListener('keydown', previewClick, true)
+  document.addEventListener('pointerover', e => {
+    lastPointerPosition = {x: e.clientX, y: e.clientY}
+    if (!config.enabled || !config.hoverImagePreview || e.pointerType == 'touch' || e.buttons || !(e.target instanceof Element)) return
+    let target = getHoverImage(e.target)
+    if (target && target.source !== dismissedPreviewSource) showImagePreview(target.source, target.image)
+  }, true)
+  // A pointer that stays still over a photo gets no new pointerover if the
+  // preview was cancelled, so moving over a photo without one retries it.
+  let lastMoveCheck = 0
+  document.addEventListener('pointermove', e => {
+    lastPointerPosition = {x: e.clientX, y: e.clientY}
+    if (imagePreview || !config.enabled || !config.hoverImagePreview || e.pointerType == 'touch' || e.buttons || !(e.target instanceof Element)) return
+    if (e.timeStamp - lastMoveCheck < 150) return
+    lastMoveCheck = e.timeStamp
+    if (!e.target.closest('[data-testid="tweetPhoto"], .cpftInlineReplyMediaItem, .cpftReaderPhoto')) return
+    let target = getHoverImage(e.target)
+    if (target && target.source !== dismissedPreviewSource) showImagePreview(target.source, target.image)
+  }, {capture: true, passive: true})
+  document.addEventListener('pointerout', e => {
+    let leaving = $source => !(e.relatedTarget instanceof Node) || !$source.contains(e.relatedTarget)
+    if (dismissedPreviewSource && leaving(dismissedPreviewSource)) dismissedPreviewSource = null
+    if (imagePreview && leaving(imagePreview.source)) hideImagePreview()
+  }, true)
+  document.addEventListener('pointerdown', () => {
+    keyboardFocus = false
+    if (imagePreview) dismissedPreviewSource = imagePreview.source
+    hideImagePreview()
+  }, true)
+  document.addEventListener('focusin', e => {
+    if (!keyboardFocus || !config.enabled || !config.hoverImagePreview || !(e.target instanceof Element)) return
+    let $focused = e.target
+    let target = getHoverImage(e.target)
+    if (!target) return
+    // Tab may scroll a tall photo into view immediately after focusin. Wait
+    // until that scrolling settles so it doesn't cancel the keyboard preview.
+    let raf = window.requestAnimationFrame || (callback => setTimeout(callback, 0))
+    raf(() => raf(() => {
+      if (keyboardFocus && config.enabled && config.hoverImagePreview && document.activeElement === $focused) showImagePreview(target.source, target.image)
+    }))
+  })
+  document.addEventListener('focusout', e => {
+    if (imagePreview && (!(e.relatedTarget instanceof Node) || !imagePreview.source.contains(e.relatedTarget))) hideImagePreview()
+  })
+  document.addEventListener('keydown', e => {
+    if (e.key == 'Tab') keyboardFocus = true
+    if (e.key != 'Escape') return
+    keyboardFocus = false
+    if (imagePreview) {
+      dismissedPreviewSource = imagePreview.source
+      hideImagePreview()
+    }
+    else if (quoteReaderState) {
+      e.preventDefault()
+      e.stopPropagation()
+      closeQuoteReader()
+    }
+  })
+  window.addEventListener('blur', hideImagePreview)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) hideImagePreview() })
+  window.addEventListener('scroll', () => {
+    // X makes small scroll adjustments while posts load, so a pending preview
+    // stays as long as its photo is still under the pointer
+    if (imagePreview && (imagePreview.overlay.isConnected || !isUnderPointer(imagePreview.source))) hideImagePreview()
+    positionQuoteReader()
+  }, true)
+  window.addEventListener('resize', () => { hideImagePreview(); positionQuoteReader() })
+  addTweetActionButtons(document)
+}
+
+function getQuoteAndImagePreviewCss() {
+  return `
+    #cpftQuoteReader, #cpftImagePreview {
+      box-sizing: border-box;
+      background: var(--cpft-background, #fff);
+      border: 1px solid var(--cpft-border, #cfd9de);
+      color: var(--cpft-text-primary, #0f1419);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body.LightsOut :is(#cpftQuoteReader, #cpftImagePreview) { background: var(--cpft-background, #000); }
+    #cpftQuoteReader {
+      position: fixed;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-radius: 18px;
+      box-shadow: 0 6px 32px rgb(0 0 0 / 12%);
+      font-size: 1rem;
+      line-height: 1.45;
+      outline: none;
+      animation: cpftReaderEnter 140ms ease-out;
+    }
+    #cpftQuoteReader:focus-visible { outline: 2px solid var(--cpft-theme, ${THEME_BLUE}); outline-offset: 2px; }
+    .cpftQuoteReaderHeader {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 54px;
+      padding: 4px 10px;
+      border-bottom: 1px solid var(--cpft-border, #cfd9de);
+    }
+    .cpftQuoteReaderHeader h2 { flex: 1; font-size: 1rem; font-weight: 700; margin: 0; }
+    #cpftQuoteReader button {
+      font: inherit;
+      color: var(--cpft-theme, ${THEME_BLUE});
+      background: none;
+      border: 0;
+      cursor: pointer;
+    }
+    #cpftQuoteReader a { color: var(--cpft-theme, ${THEME_BLUE}); text-decoration: none; }
+    #cpftQuoteReader a:hover { text-decoration: underline; }
+    #cpftQuoteReader .cpftQuoteReaderHeader button {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      flex-shrink: 0;
+      border-radius: 50%;
+      color: var(--cpft-text-primary);
+      font-size: 24px;
+      line-height: 1;
+    }
+    #cpftQuoteReader .cpftQuoteReaderHeader button:hover { background: var(--cpft-hover-bg); }
+    #cpftQuoteReader .cpftQuoteReaderHeader button svg { width: 20px; height: 20px; fill: currentColor; }
+    #cpftQuoteReader button:disabled { opacity: 0.25; cursor: default; }
+    #cpftQuoteReader :is(button, a):focus-visible { outline: 2px solid var(--cpft-theme, ${THEME_BLUE}); outline-offset: 2px; }
+    .cpftQuoteListItem { border-bottom: 1px solid var(--cpft-border); cursor: pointer; }
+    .cpftQuoteListItem:hover { background: var(--cpft-hover-bg); }
+    #cpftQuoteReader .cpftReaderReadPost { padding: 0; font-size: 0.8667rem; margin-left: auto; }
+    .cpftQuoteListFooter { padding: 20px 16px; color: var(--cpft-text-secondary); font-size: 0.8667rem; }
+    .cpftReaderOpen { white-space: nowrap; font-size: 0.8667rem; }
+    .cpftQuoteReaderBody {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: var(--cpft-border) transparent;
+      padding: 6px 0 12px;
+    }
+    #cpftQuoteReader .cpftInlineReplyTweet { padding: 12px; gap: 8px; border-radius: 0; }
+    #cpftQuoteReader .cpftInlineReplyHeader { flex-wrap: wrap; white-space: normal; gap: 2px 4px; }
+    #cpftQuoteReader .cpftInlineReplyHeader a { color: inherit; }
+    #cpftQuoteReader .cpftInlineReplyHeader .cpftInlineReplyName { color: var(--cpft-text-primary); }
+    #cpftQuoteReader .cpftInlineReplyText { margin-top: 5px; line-height: 1.45; }
+    #cpftQuoteReader .cpftInlineReplyActions { margin-top: 10px; }
+    #cpftQuoteReader .cpftInlineReply > .cpftReplies { margin-left: 27px; }
+    #cpftQuoteReader .cpftReaderPost > .cpftInlineReplyTweet { cursor: default; }
+    #cpftQuoteReader .cpftReaderPost > .cpftInlineReplyTweet:hover { background: transparent; }
+    .cpftReaderSectionLabel { margin: 8px 12px 2px; color: var(--cpft-text-secondary); font-size: 0.8rem; }
+    .cpftReaderAncestors { border-bottom: 1px solid var(--cpft-border); margin-bottom: 4px; }
+    .cpftReaderAncestors > .cpftReaderPost { position: relative; }
+    .cpftReaderAncestors > .cpftReaderPost::before {
+      content: ''; position: absolute; top: 46px; bottom: 0; left: 27px;
+      width: 2px; background: var(--cpft-border); pointer-events: none;
+    }
+    .cpftReaderFocus > .cpftReaderPost > .cpftInlineReplyTweet { padding-top: 16px; }
+    .cpftReaderFocus > .cpftReaderPost > .cpftInlineReplyTweet > .cpftInlineReplyMain > .cpftInlineReplyText { font-size: 1.0667rem; }
+    .cpftReaderMedia { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; position: relative; }
+    .cpftReaderPhotoGrid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: minmax(0, 1fr); gap: 2px; aspect-ratio: 16 / 9;
+      width: 100%; max-height: 280px; overflow: hidden;
+      border-radius: 12px; border: 1px solid var(--cpft-border);
+    }
+    .cpftReaderPhotoGrid[data-photo-count="1"] { grid-template-columns: minmax(0, 1fr); }
+    .cpftReaderPhotoGrid:not([data-photo-count="1"]):not([data-photo-count="2"]) { grid-template-rows: repeat(2, minmax(0, 1fr)); }
+    .cpftReaderPhotoGrid[data-photo-count="3"] > :first-child { grid-row: span 2; }
+    .cpftReaderPhoto { display: block; min-width: 0; min-height: 0; line-height: 0; overflow: hidden; }
+    .cpftReaderPhoto img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .cpftReaderMedia video { display: block; width: 100%; max-height: 240px; border-radius: 12px; background: #000; }
+    .cpftReaderMediaFallback { align-self: flex-start; font-size: 0.8rem; }
+    .cpftReaderSensitive > :not(.cpftReaderReveal) { display: none; }
+    #cpftQuoteReader .cpftReaderReveal {
+      border: 1px solid var(--cpft-border); border-radius: 12px; padding: 20px 12px;
+    }
+    .cpftReaderEmbeddedQuote { border: 1px solid var(--cpft-border); border-radius: 12px; margin-top: 12px; overflow: hidden; }
+    #cpftQuoteReader .cpftReaderEmbeddedQuote .cpftReaderEmbeddedQuote { margin-inline-start: -36px; }
+    #cpftQuoteReader .cpftReaderEmbeddedQuote .cpftInlineReplyTweet { padding: 10px; }
+    #cpftQuoteReader .cpftReaderContextLink { display: block; font-size: 0.8rem; padding: 10px 12px; text-align: start; }
+    .cpftReaderNote { color: var(--cpft-text-secondary); font-size: 0.8667rem; }
+    .cpftReaderLoading, .cpftReaderEmpty { padding: 20px 16px; color: var(--cpft-text-secondary); }
+    .cpftReaderEmpty p { margin: 0 0 12px; }
+    .cpftReaderSkeleton {
+      margin: 0 16px 24px; height: 120px; border-radius: 12px;
+      background: linear-gradient(100deg, var(--cpft-hover-bg) 35%, var(--cpft-border) 50%, var(--cpft-hover-bg) 65%);
+      background-size: 250% 100%; animation: cpftReaderLoading 1.4s infinite;
+    }
+    #cpftImagePreview {
+      position: fixed; z-index: 10001; padding: 8px; border-radius: 14px;
+      pointer-events: none; box-shadow: 0 12px 48px rgb(0 0 0 / 35%);
+      animation: cpftReaderEnter 100ms ease-out;
+    }
+    #cpftImagePreview img { display: block; object-fit: contain; border-radius: 7px; max-width: calc(100vw - 32px); max-height: calc(100vh - 48px); }
+    @keyframes cpftReaderEnter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes cpftReaderLoading { to { background-position: -250% 0; } }
+    @media (prefers-reduced-motion: reduce) { #cpftQuoteReader, #cpftImagePreview, .cpftReaderSkeleton { animation: none; } }
+  `
+}
+//#endregion
+
+//#region Ask about this post
+const ASK_TIMEOUT_MS = 200_000
+const ASK_HELPER_HINT = 'Run npm run ask-helper:install in the extension folder, then reload the extension.'
+const ASK_ICON_PATH = 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1-5h2v2h-2v-2zm1-10c-2.2 0-4 1.6-4 3.6h2c0-.9.9-1.6 2-1.6s2 .7 2 1.6c0 .7-.4 1-1.2 1.6-.9.6-1.8 1.4-1.8 2.8v.5h2v-.4c0-.6.4-1 1.2-1.6.9-.7 1.8-1.4 1.8-2.9C16 6.6 14.2 5 12 5z'
+const QUOTE_ICON_PATH = 'M4 11.5C4 8.46 6.46 6 9.5 6h.5v2h-.5A3.5 3.5 0 0 0 6 11.5v.5h4v6H4v-6.5zm10 0C14 8.46 16.46 6 19.5 6h.5v2h-.5a3.5 3.5 0 0 0-3.5 3.5v.5h4v6h-6v-6.5z'
+const CLOSE_ICON_PATH = 'M10.59 12L4.54 5.96l1.42-1.42L12 10.59l6.04-6.05 1.42 1.42L13.41 12l6.05 6.04-1.42 1.42L12 13.41l-6.04 6.05-1.42-1.42L10.59 12z'
+const BACK_ICON_PATH = 'M7.414 13l5.043 5.04-1.414 1.42L3.586 12l7.457-7.46 1.414 1.42L7.414 11H21v2H7.414z'
+const LIKE_ICON_PATH = 'M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-1.243.07-2.349.78-2.91 1.91-.552 1.12-.633 2.78.479 4.82 1.074 1.97 3.257 4.27 7.129 6.61 3.87-2.34 6.052-4.64 7.126-6.61 1.111-2.04 1.03-3.7.477-4.82-.561-1.13-1.666-1.84-2.908-1.91zm4.187 7.69c-1.351 2.48-4.001 5.12-8.379 7.67l-.503.3-.504-.3c-4.379-2.55-7.029-5.19-8.382-7.67-1.36-2.5-1.41-4.86-.514-6.67.887-1.79 2.647-2.91 4.601-3.01 1.651-.09 3.368.56 4.798 2.01 1.429-1.45 3.146-2.1 4.796-2.01 1.954.1 3.714 1.22 4.601 3.01.896 1.81.846 4.17-.514 6.67z'
+const LIKED_ICON_PATH = 'M20.884 13.19c-1.351 2.48-4.001 5.12-8.379 7.67l-.503.3-.504-.3c-4.379-2.55-7.029-5.19-8.382-7.67-1.36-2.5-1.41-4.86-.514-6.67.887-1.79 2.647-2.91 4.601-3.01 1.651-.09 3.368.56 4.798 2.01 1.429-1.45 3.146-2.1 4.796-2.01 1.954.1 3.714 1.22 4.601 3.01.896 1.81.846 4.17-.514 6.67z'
+const REPLY_ICON_PATH = 'M1.751 10c0-4.42 3.584-8 8.005-8h4.366c4.49 0 8.129 3.64 8.129 8.13 0 2.96-1.607 5.68-4.196 7.11l-8.054 4.46v-3.69h-.067c-4.49.1-8.183-3.51-8.183-8.01zm8.005-6c-3.317 0-6.005 2.69-6.005 6 0 3.37 2.77 6.08 6.138 6.01l.351-.01h1.761v2.3l5.087-2.81c1.951-1.08 3.163-3.13 3.163-5.36 0-3.39-2.744-6.13-6.129-6.13H9.756z'
+
+/**
+ * Questions and answers about each post, by post id.
+ * @type {Map<string, import("./types").AskThread>}
+ */
+let askThreads = new Map()
+
+/**
+ * Ids of posts whose answer panel is open.
+ * @type {Set<string>}
+ */
+let openAskPanels = new Set()
+
+/**
+ * Posts whose answer shows in the reader beside the timeline rather than
+ * below the post, so you can keep scrolling while it loads.
+ * @type {Set<string>}
+ */
+let askPanelsInReader = new Set()
+
+/** @type {Map<string, {resolve: (value: any) => void, reject: (reason: any) => void, timeout: ReturnType<typeof setTimeout>}>} */
+let pendingAskRequests = new Map()
+let askRequestCount = 0
+
+// The content script relays requests to the extension's background page, which
+// calls the AI provider chosen in the options, and posts its response back.
+window.addEventListener('message', (e) => {
+  if (e.source !== window || e.data?.type != 'cpftAskResponse') return
+  let pending = pendingAskRequests.get(e.data.requestId)
+  if (!pending) return
+  pendingAskRequests.delete(e.data.requestId)
+  clearTimeout(pending.timeout)
+  if (e.data.error) pending.reject(new Error(e.data.error))
+  else pending.resolve(e.data)
+})
+
+/**
+ * @param {{context: any, history: {question: ?string, answer: string}[], question: ?string, deep: boolean}} request
+ * @returns {Promise<{answer: string, model?: string, elapsedMs?: number}>}
+ */
+function requestAskAnswer(request) {
+  return new Promise((resolve, reject) => {
+    let requestId = `${Date.now()}-${++askRequestCount}`
+    let timeout = setTimeout(() => {
+      pendingAskRequests.delete(requestId)
+      reject(new Error('No answer from the AI provider. Check the extension\'s AI options.'))
+    }, ASK_TIMEOUT_MS)
+    pendingAskRequests.set(requestId, {resolve, reject, timeout})
+    window.postMessage({type: 'cpftAskRequest', requestId, request}, location.origin)
+  })
+}
+
+/** @param {string} d */
+function createSvgIcon(d) {
+  let ns = 'http://www.w3.org/2000/svg'
+  let $svg = document.createElementNS(ns, 'svg')
+  $svg.setAttribute('viewBox', '0 0 24 24')
+  $svg.setAttribute('aria-hidden', 'true')
+  let $path = document.createElementNS(ns, 'path')
+  $path.setAttribute('d', d)
+  $path.setAttribute('fill-rule', 'evenodd')
+  $svg.append($path)
+  return $svg
+}
+
+/**
+ * The post details the ask helper sends to Codex, with links expanded.
+ * @param {import("./types").InlineReply} tweet
+ * @param {number} [depth]
+ * @returns {import("./types").AskPost}
+ */
+function getAskPost(tweet, depth = 0) {
+  let chars = Array.from(tweet.text)
+  let [start, end] = tweet.displayTextRange || [0, chars.length]
+  let text = chars.slice(start, end).join('')
+  for (let url of tweet.entities?.urls || []) {
+    if (url.url && url.expanded_url) text = text.split(url.url).join(url.expanded_url)
+  }
+  for (let media of tweet.entities?.media || []) {
+    if (media.url) text = text.split(media.url).join('')
+  }
+  let translation = inlineReplyTranslations.get(tweet.id)
+  return {
+    url: `https://x.com${tweet.path}`,
+    author: `${tweet.name} (@${tweet.screenName})`,
+    createdAt: Number.isNaN(tweet.createdAt.getTime()) ? null : tweet.createdAt.toISOString(),
+    lang: tweet.lang,
+    ...(tweet.inReplyToScreenName && {replyingTo: `@${tweet.inReplyToScreenName}`}),
+    text: unescapeTweetText(text).trim(),
+    ...(translation?.status == 'loaded' && {translation: translation.text}),
+    ...(tweet.card && {card: tweet.card}),
+    media: tweet.media.map(media => {
+      // The smallest video is plenty for sampling a few frames
+      let [video] = (media.video_info?.variants || [])
+        .filter(variant => variant.content_type == 'video/mp4')
+        .sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0))
+      return {
+        type: media.type,
+        imageUrl: media.media_url_https,
+        ...(video && {videoUrl: video.url, durationMs: media.video_info?.duration_millis}),
+        ...(media.ext_alt_text && {alt: media.ext_alt_text}),
+      }
+    }),
+    ...(tweet.quoted && depth < 2 && {quoted: getAskPost(tweet.quoted, depth + 1)}),
+  }
+}
+
+/**
+ * Asks what a post is about, or a follow-up question about it.
+ * @param {string} tweetId
+ * @param {{question?: ?string, deep?: boolean, replaceLast?: boolean}} [options] `deep` uses
+ *   the stronger model, and `replaceLast` asks the latest question again instead of adding one
+ */
+async function askAboutPost(tweetId, {question = null, deep = false, replaceLast = false} = {}) {
+  let thread = askThreads.get(tweetId)
+  if (!thread || !question && !replaceLast) {
+    // A new thread keeps the post's context, so asking again doesn't reload it
+    thread = {context: thread?.context, turns: []}
+    askThreads.set(tweetId, thread)
+  }
+  if (replaceLast && thread.turns.length > 0) question = thread.turns.pop().question
+  /** @type {import("./types").AskTurn} */
+  let turn = {question, status: 'loading', deep}
+  thread.turns.push(turn)
+  renderAskPanels(tweetId)
+  try {
+    if (!thread.context) {
+      let {tweet, ancestors, replies} = await getQuoteConversation(tweetId, new AbortController().signal)
+      thread.context = {
+        post: getAskPost(tweet),
+        ancestors: ancestors.slice(-6).map(ancestor => getAskPost(ancestor)),
+        replies: replies.slice(0, 10).map(reply => ({author: `${reply.name} (@${reply.screenName})`, text: getAskPost(reply).text})),
+      }
+    }
+    let history = thread.turns
+      .filter(earlier => earlier !== turn && earlier.status == 'loaded')
+      .map(earlier => ({question: earlier.question, answer: earlier.answer}))
+    let result = await requestAskAnswer({context: thread.context, history, question, deep})
+    if (askThreads.get(tweetId) !== thread || !thread.turns.includes(turn)) return
+    Object.assign(turn, {status: 'loaded', answer: String(result.answer || ''), model: result.model, elapsedMs: result.elapsedMs})
+    log('ask: answered', tweetId, `${result.elapsedMs}ms`)
+  } catch (e) {
+    if (askThreads.get(tweetId) !== thread || !thread.turns.includes(turn)) return
+    error('ask: error asking about', tweetId, e)
+    let message = String(e?.message || e)
+    // Keep the browser's own error, as several different problems mention the host
+    if (/native messaging host/i.test(message)) message = `Couldn't start the ask helper (${message}). ${ASK_HELPER_HINT}`
+    Object.assign(turn, {status: 'error', error: message})
+  }
+  renderAskPanels(tweetId)
+}
+
+/**
+ * @param {string} tweetId
+ * @param {string} path
+ * @param {{inReader?: boolean}} [options] show the post and its answer in the
+ *   reader beside the timeline, instead of below the post
+ */
+function toggleAskPanel(tweetId, path, {inReader = false} = {}) {
+  let isShowing = openAskPanels.has(tweetId) && (!inReader || quoteReaderState?.id == tweetId)
+  if (isShowing) {
+    openAskPanels.delete(tweetId)
+    askPanelsInReader.delete(tweetId)
+    if (inReader) closeQuoteReader()
+    renderAskPanels(tweetId)
+    return
+  }
+  openAskPanels.add(tweetId)
+  if (inReader) {
+    askPanelsInReader.add(tweetId)
+    openQuoteReader({id: tweetId, path}, {title: 'What\'s this about?'})
+  } else {
+    askPanelsInReader.delete(tweetId)
+  }
+  let thread = askThreads.get(tweetId)
+  if (!thread || thread.turns.length == 0 || thread.turns[thread.turns.length - 1].status == 'error') {
+    askAboutPost(tweetId, {replaceLast: Boolean(thread?.turns.length)})
+  } else {
+    renderAskPanels(tweetId)
+  }
+}
+
+/**
+ * @param {string} tweetId
+ * @param {string} path
+ */
+function createAskButton(tweetId, path) {
+  let isOpen = openAskPanels.has(tweetId)
+  return createEl('button', {
+    type: 'button',
+    className: `cpftAskButton${isOpen ? ' cpftActive' : ''}`,
+    'aria-label': 'Ask what this tweet is about',
+    'aria-expanded': String(isOpen),
+    title: 'Ask what this tweet is about',
+    dataset: {cpftAsk: 'true', tweetId, path},
+  }, createSvgIcon(ASK_ICON_PATH))
+}
+
+/**
+ * Renders inline markdown from an answer: links, bold, italics and code.
+ * @param {string} text
+ */
+function renderAskInline(text) {
+  let $fragment = document.createDocumentFragment()
+  let pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|\*([^*\s][^*]*)\*|`([^`]+)`|(https?:\/\/[^\s<]*[^\s<.,;:!?)\]'"])/g
+  let pos = 0
+  for (let match of text.matchAll(pattern)) {
+    $fragment.append(text.slice(pos, match.index))
+    if (match[1]) {
+      $fragment.append(createEl('a', {href: match[2], target: '_blank', rel: 'noopener noreferrer'}, match[1]))
+    } else if (match[3]) {
+      $fragment.append(createEl('strong', {}, match[3]))
+    } else if (match[4]) {
+      $fragment.append(createEl('em', {}, match[4]))
+    } else if (match[5]) {
+      $fragment.append(createEl('code', {}, match[5]))
+    } else {
+      $fragment.append(createEl('a', {href: match[6], target: '_blank', rel: 'noopener noreferrer'}, match[6]))
+    }
+    pos = match.index + match[0].length
+  }
+  $fragment.append(text.slice(pos))
+  return $fragment
+}
+
+/** @param {string} answer */
+function renderAskAnswer(answer) {
+  let $answer = createEl('div', {className: 'cpftAskAnswer', dir: 'auto'})
+  let $list = null
+  for (let line of answer.split(/\r?\n/)) {
+    let item = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/)
+    let heading = line.match(/^#{1,6}\s+(.*)$/)
+    if (item) {
+      if (!$list) $answer.append($list = createEl('ul'))
+      $list.append(createEl('li', {}, renderAskInline(item[1])))
+      continue
+    }
+    $list = null
+    if (heading) {
+      $answer.append(createEl('p', {}, createEl('strong', {}, renderAskInline(heading[1]))))
+    } else if (line.trim()) {
+      $answer.append(createEl('p', {}, renderAskInline(line.trim())))
+    }
+  }
+  return $answer
+}
+
+/** @param {string} tweetId */
+function createAskPanel(tweetId) {
+  if (!openAskPanels.has(tweetId)) return null
+  let turns = askThreads.get(tweetId)?.turns || []
+  let last = turns[turns.length - 1]
+  let $panel = createEl('div', {className: 'cpftAskPanel', dataset: {tweetId}},
+    createEl('div', {className: 'cpftAskHeader'},
+      createSvgIcon(ASK_ICON_PATH),
+      createEl('span', {className: 'cpftAskTitle'}, 'What\'s this about?'),
+      last?.status == 'loaded' && !last.deep && createEl('button', {
+        type: 'button',
+        title: 'Ask this again with a stronger, slower model',
+        dataset: {askAction: 'deeper', tweetId},
+      }, 'Think harder'),
+      last?.status == 'loaded' && createEl('button', {type: 'button', dataset: {askAction: 'retry', tweetId}}, 'Ask again'),
+      createEl('button', {type: 'button', className: 'cpftAskClose', 'aria-label': 'Close', title: 'Close', dataset: {askAction: 'close', tweetId}}, createSvgIcon(CLOSE_ICON_PATH)),
+    ),
+  )
+  for (let turn of turns) {
+    if (turn.question) {
+      $panel.append(createEl('p', {className: 'cpftAskQuestion', dir: 'auto'}, turn.question))
+    }
+    if (turn.status == 'loading') {
+      $panel.append(createEl('div', {className: 'cpftAskStatus', role: 'status'}, turn.deep
+        ? 'Thinking harder… this can take 20–40 seconds.'
+        : turn.question ? 'Thinking…' : 'Looking into this tweet… this usually takes 10–30 seconds.'))
+    } else if (turn.status == 'error') {
+      $panel.append(createEl('div', {className: 'cpftAskStatus', role: 'status'},
+        `${turn.error} `,
+        turn === last && createEl('button', {type: 'button', dataset: {askAction: 'retry', tweetId}}, 'Try again'),
+      ))
+    } else {
+      $panel.append(
+        renderAskAnswer(turn.answer),
+        turn.model && createEl('div', {className: 'cpftAskMeta'}, [turn.model, turn.elapsedMs && `${Math.round(turn.elapsedMs / 1000)}s`].filter(Boolean).join(' · ')),
+      )
+    }
+  }
+  if (last?.status == 'loaded') {
+    let $input = createEl('input', {type: 'text', name: 'question', placeholder: 'Ask a follow-up…', 'aria-label': 'Ask a follow-up question', autocomplete: 'off', dir: 'auto'})
+    // Keep typing away from Twitter's own keyboard shortcuts
+    $input.addEventListener('keydown', e => e.stopPropagation())
+    $panel.append(createEl('form', {className: 'cpftAskFollowUp', dataset: {tweetId}},
+      $input,
+      createEl('button', {type: 'submit'}, 'Ask'),
+    ))
+  }
+  return $panel
+}
+
+/**
+ * Gets the action bar of a native tweet, not of a post it quotes.
+ * @param {Element} $tweet
+ */
+function getTweetActionBar($tweet) {
+  return /** @type {HTMLElement} */ ($tweet.querySelector('[data-testid="reply"]')?.closest('[role="group"]'))
+}
+
+/**
+ * Puts a native tweet's answer panel below its action bar, or removes it.
+ * @param {Element} $tweet
+ * @param {string} tweetId
+ */
+function syncNativeAskPanel($tweet, tweetId) {
+  let $group = getTweetActionBar($tweet)
+  let $existing = $tweet.querySelector(`.cpftAskPanel[data-tweet-id="${tweetId}"]`)
+  // An answer shown in the reader doesn't also go below the post
+  let $panel = config.askAboutPosts && !askPanelsInReader.has(tweetId) ? createAskPanel(tweetId) : null
+  if ($panel) {
+    $panel.style.fontFamily = getComputedStyle($tweet.querySelector('[data-testid="tweetText"]') || $tweet).fontFamily
+  }
+  if ($existing) {
+    if ($panel) $existing.replaceWith($panel)
+    else $existing.remove()
+  } else if ($panel && $group) {
+    $group.after($panel)
+  }
+  for (let $button of $tweet.querySelectorAll(`.cpftAskButton[data-tweet-id="${tweetId}"]`)) {
+    $button.classList.toggle('cpftActive', openAskPanels.has(tweetId))
+    $button.setAttribute('aria-expanded', String(openAskPanels.has(tweetId)))
+  }
+}
+
+/** @param {string} tweetId */
+function renderAskPanels(tweetId) {
+  updateInlineReplyCards(tweetId)
+  for (let $tweet of document.querySelectorAll(Selectors.TWEET)) {
+    if (getTweetPermalink($tweet)?.id == tweetId) syncNativeAskPanel($tweet, tweetId)
+  }
+}
+
+/**
+ * Adds Quotes and "Ask about this tweet" buttons to native tweets' action bars,
+ * and puts back open answer panels when Twitter re-renders a tweet.
+ * @param {ParentNode} root
+ */
+function addTweetActionButtons(root) {
+  if (!config.enabled) return
+  for (let $tweet of root.querySelectorAll(Selectors.TWEET)) {
+    let permalink = getTweetPermalink($tweet)
+    let $group = getTweetActionBar($tweet)
+    let $existing = /** @type {HTMLElement} */ ($tweet.querySelector('.cpftTweetExtraActions'))
+    let quoteCount = permalink && config.quoteTweetPreview ? getTweetInfo(permalink.id)?.quote_count || 0 : 0
+    let showAsk = Boolean(permalink && config.askAboutPosts)
+    if (!permalink || !$group || quoteCount <= 0 && !showAsk) {
+      $existing?.remove()
+      continue
+    }
+    let key = [permalink.id, quoteCount, config.hideQuoteTweetMetrics, showAsk].join(':')
+    if ($existing?.dataset.key != key || $existing.parentElement !== $group) {
+      $existing?.remove()
+      $existing = createEl('div', {className: 'cpftTweetExtraActions', dataset: {key}},
+        quoteCount > 0 && createEl('button', {
+          type: 'button',
+          className: 'cpftTweetAction',
+          'aria-label': `${quoteCount} Quote Tweets. View Quote Tweets`,
+          title: 'View Quote Tweets',
+          dataset: {cpftQuotes: 'true', tweetId: permalink.id, path: permalink.path},
+        },
+          createSvgIcon(QUOTE_ICON_PATH),
+          !config.hideQuoteTweetMetrics && createEl('span', {}, formatInlineReplyCount(quoteCount)),
+        ),
+        showAsk && createAskButton(permalink.id, permalink.path),
+      )
+      // Before the bookmark and share buttons
+      $group.insertBefore($existing, $group.lastElementChild)
+    }
+    if (showAsk && (openAskPanels.has(permalink.id) || $tweet.querySelector('.cpftAskPanel'))) {
+      syncNativeAskPanel($tweet, permalink.id)
+    }
+  }
+}
+
+/** @param {HTMLElement} $ask */
+function onAskButton($ask) {
+  let {tweetId, path} = $ask.dataset
+  // Timeline posts show their answer in the reader beside the timeline, so you
+  // can keep scrolling while it loads. Replies and reader posts answer in place.
+  let isTimelinePost = Boolean($ask.closest('.cpftTweetExtraActions'))
+  toggleAskPanel(tweetId, path, {inReader: isTimelinePost && config.askOpenInReader && config.quoteTweetPreview})
+}
+
+function interceptAskClicks() {
+  document.addEventListener('click', (e) => {
+    if (!config.enabled || !(e.target instanceof Element)) return
+    let $ask = /** @type {HTMLElement} */ (e.target.closest('button[data-cpft-ask]'))
+    if ($ask) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      if (config.askAboutPosts) onAskButton($ask)
+      return
+    }
+    let $panel = e.target.closest('.cpftAskPanel')
+    if (!$panel) return
+    // Keep clicks in the answer from opening the post or toggling replies.
+    // Links still open, in a new tab.
+    e.stopImmediatePropagation()
+    let $button = /** @type {HTMLElement} */ (e.target.closest('button[data-ask-action]'))
+    if (!$button) return
+    e.preventDefault()
+    let {askAction, tweetId} = $button.dataset
+    let turns = askThreads.get(tweetId)?.turns || []
+    let last = turns[turns.length - 1]
+    if (askAction == 'close') {
+      openAskPanels.delete(tweetId)
+      askPanelsInReader.delete(tweetId)
+      renderAskPanels(tweetId)
+    } else if (askAction == 'retry') {
+      // Retry a failed question, or start over
+      if (last?.status == 'error') askAboutPost(tweetId, {replaceLast: true, deep: last.deep})
+      else askAboutPost(tweetId)
+    } else if (askAction == 'deeper') {
+      askAboutPost(tweetId, {replaceLast: true, deep: true})
+    }
+  }, true)
+  document.addEventListener('submit', (e) => {
+    let $form = e.target instanceof HTMLFormElement && e.target.matches('.cpftAskFollowUp') ? e.target : null
+    if (!$form) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    let question = /** @type {HTMLInputElement} */ ($form.elements.namedItem('question')).value.trim()
+    if (question) askAboutPost($form.dataset.tweetId, {question})
+  }, true)
+}
+
+function removeAskPanels() {
+  openAskPanels.clear()
+  askPanelsInReader.clear()
+  document.querySelectorAll('.cpftAskPanel').forEach($el => $el.remove())
+  document.querySelectorAll('.cpftAskButton.cpftActive').forEach($el => $el.classList.remove('cpftActive'))
+}
+//#endregion
+
+//#region Keyboard shortcuts
+/**
+ * Shortcuts for posts and inline replies. These avoid Twitter's own keys (j, k,
+ * l, r, t, s, b, o, n, Enter...), which keep working on native posts.
+ */
+function interceptKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    if (!config.enabled || !config.keyboardShortcuts || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return
+    if (!(e.target instanceof Element)) return
+    if (e.target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) return
+    let $card = /** @type {HTMLElement} */ (e.target.closest('.cpftInlineReply'))
+    let handled = $card ? onInlineReplyKey(e, $card) : onTimelinePostKey(e)
+    if (handled) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+    }
+  }, true)
+}
+
+/**
+ * @param {KeyboardEvent} e
+ * @returns {boolean} whether the key was handled
+ */
+function onTimelinePostKey(e) {
+  let $tweet = e.target instanceof Element ? e.target.closest(Selectors.TWEET) : null
+  if (!$tweet || !$tweet.closest(Selectors.TIMELINE) || e.shiftKey) return false
+  let permalink = getTweetPermalink($tweet)
+  if (!permalink) return false
+  if (e.key == 'e' && config.inlineReplies && !isOnIndividualTweetPage()) {
+    toggleTimelineInlineReplies($tweet, permalink)
+    return true
+  }
+  if (e.key == 'a' && config.askAboutPosts) {
+    let $ask = /** @type {HTMLElement} */ ($tweet.querySelector('.cpftTweetExtraActions button[data-cpft-ask]'))
+    if ($ask) onAskButton($ask)
+    else toggleAskPanel(permalink.id, permalink.path)
+    return true
+  }
+  if (e.key == 'q' && config.quoteTweetPreview) {
+    let $quote = $tweet.querySelector('div[role="link"] [data-testid="User-Name"]')
+    let target = $quote && getQuotePreviewTarget($quote)
+    if (!target) return false
+    openQuoteReader(target, {resolveQuote: target.resolveQuote})
+    return true
+  }
+  return false
+}
+
+/**
+ * @param {KeyboardEvent} e
+ * @param {HTMLElement} $card
+ * @returns {boolean} whether the key was handled
+ */
+function onInlineReplyKey(e, $card) {
+  let replyId = $card.dataset.tweetId
+  let reply = inlineReplyTweets.get(replyId)
+  if (!reply) return false
+  let key = e.shiftKey ? e.key.toUpperCase() : e.key
+  if ((key == 'Enter' || key == 'e') && $card.classList.contains('cpftHasReplies')) {
+    toggleInlineReplyReplies($card)
+    focusInlineReply(replyId)
+  } else if (key == 'j' || key == 'k') {
+    // Move between replies in reading order, including nested ones
+    let $cards = Array.from(document.querySelectorAll('.cpftInlineReplyTweet[tabindex]'))
+      .filter($el => /** @type {HTMLElement} */ ($el).offsetParent != null)
+    let index = $cards.indexOf($card.querySelector(':scope > .cpftInlineReplyTweet'))
+    let $next = /** @type {HTMLElement} */ ($cards[index + (key == 'j' ? 1 : -1)])
+    if (!$next) return false
+    $next.focus()
+    $next.scrollIntoView({block: 'nearest'})
+  } else if (key == 'l' && config.inlineReplyActions) {
+    toggleInlineReplyLike(replyId)
+    focusInlineReply(replyId)
+  } else if (key == 'r' && config.inlineReplyActions) {
+    replyToInlineReply(replyId)
+  } else if (key == 'a' && config.askAboutPosts) {
+    toggleAskPanel(replyId, reply.path)
+    focusInlineReply(replyId)
+  } else if (key == 'o') {
+    History_push?.({pathname: reply.path, hash: '', query: {}, search: ''})
+  } else if (key == 'Escape') {
+    // Back to the timeline post these replies belong to
+    let $tweet = /** @type {HTMLElement} */ ($card.closest('.cpftRepliesRoot')?.previousElementSibling)
+    if (!$tweet) return false
+    $tweet.focus()
+  } else {
+    return false
+  }
+  return true
+}
+
+/**
+ * Cards are replaced when they change, so focus the new one.
+ * @param {string} replyId
+ */
+function focusInlineReply(replyId) {
+  /** @type {HTMLElement} */ (document.querySelector(`.cpftInlineReply[data-tweet-id="${replyId}"] > .cpftInlineReplyTweet`))?.focus({preventScroll: true})
+}
+
+//#endregion
+
 //#region CSS
 const configureCss = (() => {
   let $style
@@ -4382,6 +6720,450 @@ const configureCss = (() => {
         }
       }
     `)
+
+    if (config.quoteTweetPreview || config.hoverImagePreview) cssRules.push(getQuoteAndImagePreviewCss())
+    if (config.quoteTweetPreview || config.askAboutPosts) {
+      cssRules.push(`
+        /* Quotes and Ask buttons join the tweet's own action bar */
+        .cpftTweetExtraActions {
+          display: contents;
+        }
+        :is(.cpftTweetAction, .cpftTweetExtraActions .cpftAskButton) {
+          align-items: center;
+          background: none;
+          border: none;
+          color: var(--cpft-text-secondary, rgb(113, 118, 123));
+          cursor: pointer;
+          display: flex;
+          font-family: TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          font-size: 13px;
+          gap: 4px;
+          min-height: 34px;
+          padding: 0;
+        }
+        .cpftTweetAction {
+          flex: 1 1 0;
+        }
+        .cpftTweetExtraActions .cpftAskButton {
+          flex: 0 0 auto;
+          margin-right: 12px;
+        }
+        :is(.cpftTweetAction, .cpftTweetExtraActions .cpftAskButton) svg {
+          border-radius: 9999px;
+          box-sizing: content-box;
+          fill: currentColor;
+          height: 18.75px;
+          margin: -8px;
+          padding: 8px;
+          width: 18.75px;
+        }
+        :is(.cpftTweetAction, .cpftAskButton):is(:hover, :focus-visible, .cpftActive) {
+          color: var(--cpft-theme, ${THEME_BLUE});
+        }
+        :is(.cpftTweetAction, .cpftTweetExtraActions .cpftAskButton):hover svg {
+          background-color: rgb(29 155 240 / 10%);
+        }
+        .cpftTweetAction span {
+          margin-left: 4px;
+        }
+        .cpftInlineReplyActions .cpftAskButton {
+          color: var(--cpft-replies-secondary, rgb(113, 118, 123));
+          display: inline-flex;
+        }
+        .cpftInlineReplyActions .cpftAskButton svg {
+          fill: currentColor;
+          height: 16px;
+          width: 16px;
+        }
+        .cpftAskPanel {
+          border: 1px solid var(--cpft-border, rgba(128, 128, 128, 0.3));
+          border-radius: 12px;
+          color: var(--cpft-text-primary, inherit);
+          cursor: auto;
+          font-size: 0.9333rem;
+          line-height: 1.4;
+          margin: 4px 0 12px;
+          padding: 10px 12px 12px;
+          white-space: normal;
+        }
+        .cpftAskHeader {
+          align-items: center;
+          color: var(--cpft-text-secondary, rgb(113, 118, 123));
+          display: flex;
+          font-size: 0.8667rem;
+          gap: 8px;
+          margin-bottom: 6px;
+        }
+        .cpftAskHeader svg {
+          fill: var(--cpft-theme, ${THEME_BLUE});
+          flex-shrink: 0;
+          height: 16px;
+          width: 16px;
+        }
+        .cpftAskTitle {
+          flex: 1;
+          font-weight: 700;
+        }
+        :is(.cpftAskHeader, .cpftAskStatus) button {
+          background: none;
+          border: none;
+          color: var(--cpft-theme, ${THEME_BLUE});
+          cursor: pointer;
+          font: inherit;
+          padding: 0;
+        }
+        :is(.cpftAskHeader, .cpftAskStatus) button:hover {
+          text-decoration: underline;
+        }
+        .cpftAskHeader .cpftAskClose {
+          border-radius: 9999px;
+          color: var(--cpft-text-secondary, rgb(113, 118, 123));
+          display: grid;
+          height: 28px;
+          margin: -4px -6px -4px 0;
+          place-items: center;
+          width: 28px;
+        }
+        .cpftAskHeader .cpftAskClose:hover {
+          background-color: var(--cpft-hover-bg, rgba(128, 128, 128, 0.1));
+          text-decoration: none;
+        }
+        .cpftAskHeader .cpftAskClose svg {
+          fill: currentColor;
+          height: 18px;
+          width: 18px;
+        }
+        .cpftAskQuestion {
+          border-top: 1px solid var(--cpft-border, rgba(128, 128, 128, 0.3));
+          font-weight: 700;
+          margin: 10px 0 6px;
+          padding-top: 10px;
+        }
+        .cpftAskMeta {
+          color: var(--cpft-text-secondary, rgb(113, 118, 123));
+          font-size: 0.8rem;
+          margin-top: 4px;
+        }
+        .cpftAskFollowUp {
+          display: flex;
+          gap: 8px;
+          margin-top: 10px;
+        }
+        .cpftAskFollowUp input {
+          background: transparent;
+          border: 1px solid var(--cpft-border, rgba(128, 128, 128, 0.3));
+          border-radius: 9999px;
+          color: inherit;
+          flex: 1;
+          font: inherit;
+          min-width: 0;
+          padding: 6px 12px;
+        }
+        .cpftAskFollowUp input:focus {
+          border-color: var(--cpft-theme, ${THEME_BLUE});
+          outline: none;
+        }
+        .cpftAskFollowUp button {
+          background-color: var(--cpft-theme, ${THEME_BLUE});
+          border: none;
+          border-radius: 9999px;
+          color: white;
+          cursor: pointer;
+          font: inherit;
+          font-weight: 700;
+          padding: 6px 14px;
+        }
+        .cpftAskStatus {
+          color: var(--cpft-text-secondary, rgb(113, 118, 123));
+        }
+        .cpftAskAnswer :is(p, ul) {
+          margin: 0 0 8px;
+        }
+        .cpftAskAnswer ul {
+          padding-left: 20px;
+        }
+        .cpftAskAnswer li {
+          margin: 2px 0;
+        }
+        .cpftAskAnswer > :last-child {
+          margin-bottom: 0;
+        }
+        .cpftAskAnswer a {
+          color: var(--cpft-theme, ${THEME_BLUE});
+          overflow-wrap: anywhere;
+          text-decoration: none;
+        }
+        .cpftAskAnswer a:hover {
+          text-decoration: underline;
+        }
+        .cpftAskAnswer code {
+          background-color: var(--cpft-hover-bg, rgba(128, 128, 128, 0.1));
+          border-radius: 4px;
+          font-size: 0.9em;
+          padding: 0 3px;
+        }
+      `)
+    }
+
+    if (desktop && config.compactNavigation) {
+      cssRules.push(`
+        @media (min-width: 1265px) {
+          header[role="banner"] > div,
+          header[role="banner"] > div > div,
+          header[role="banner"] > div > div > div {
+            width: 224px !important; max-width: 224px !important;
+            box-sizing: border-box; transition: none !important;
+          }
+          header[role="banner"] nav > :is(a, button) > div { padding: 10px; }
+          header[role="banner"] nav > :is(a, button) > div > div:last-child { font-size: 18px; }
+          [data-testid="SideNav_NewTweet_Button"] { min-width: 0 !important; width: calc(100% - 20px) !important; }
+        }
+      `)
+    }
+    if (desktop && config.quoteTweetPreview && !config.fullWidthContent) {
+      cssRules.push(`
+        @media (min-width: 1265px) {
+          body { --cpft-reader-sidebar-width: clamp(320px, calc(100vw - ${config.compactNavigation ? 884 : 935}px), 440px); }
+          body.Sidebar main[role="main"] > div {
+            width: calc(628px + var(--cpft-reader-sidebar-width)) !important;
+            justify-content: flex-start !important; column-gap: 28px;
+          }
+          ${Selectors.SIDEBAR} {
+            width: var(--cpft-reader-sidebar-width) !important;
+            margin-left: 0 !important; margin-right: 0 !important;
+          }
+          ${Selectors.SIDEBAR} > div > div:has(.SidebarContents),
+          ${Selectors.SIDEBAR} .SidebarContents,
+          ${Selectors.SIDEBAR} .SidebarContents > div:has(form[role="search"]) {
+            width: var(--cpft-reader-sidebar-width) !important;
+            max-width: var(--cpft-reader-sidebar-width) !important;
+          }
+        }
+      `)
+    }
+
+    if (config.inlineReplies || config.quoteTweetPreview) {
+      cssRules.push(`
+        .cpftReplies {
+          --cpft-replies-line: var(--cpft-border, rgba(128, 128, 128, 0.3));
+          --cpft-replies-primary: var(--cpft-text-primary, inherit);
+          --cpft-replies-secondary: var(--cpft-text-secondary, rgb(113, 118, 123));
+          --cpft-replies-link: var(--cpft-theme, ${THEME_BLUE});
+          border-left: 2px solid var(--cpft-replies-line);
+          color: var(--cpft-replies-primary);
+          font-size: 1rem;
+          line-height: 1.3333;
+        }
+        /* Line up with the centre of the parent tweet's avatar */
+        .cpftRepliesRoot {
+          margin: 0 16px 12px 35px;
+        }
+        .cpftInlineReply > .cpftReplies {
+          margin-left: 27px;
+        }
+        .cpftInlineReply.cpftHasReplies > .cpftInlineReplyTweet {
+          cursor: pointer;
+        }
+        .cpftInlineReply.cpftHasReplies > .cpftInlineReplyTweet:hover {
+          background-color: var(--cpft-hover-bg, rgba(128, 128, 128, 0.08));
+        }
+        .cpftInlineReplyTweet {
+          border-radius: 0 12px 12px 0;
+          display: flex;
+          gap: 8px;
+          padding: 8px 8px 8px 12px;
+        }
+        .cpftInlineReplyAvatar {
+          /* Only the picture opens the profile, not the empty column under it */
+          align-self: flex-start;
+          flex-shrink: 0;
+        }
+        .cpftInlineReplyAvatar img {
+          border-radius: 9999px;
+          display: block;
+          height: 32px;
+          width: 32px;
+        }
+        .cpftInlineReplyMain {
+          flex: 1;
+          min-width: 0;
+        }
+        .cpftInlineReplyHeader {
+          align-items: baseline;
+          color: var(--cpft-replies-secondary);
+          display: flex;
+          font-size: 0.9333rem;
+          gap: 4px;
+          overflow: hidden;
+          white-space: nowrap;
+        }
+        .cpftInlineReplyHeader a {
+          color: inherit;
+          text-decoration: none;
+        }
+        .cpftInlineReplyHeader a:hover {
+          text-decoration: underline;
+        }
+        .cpftInlineReplyHeader .cpftInlineReplyName {
+          color: var(--cpft-replies-primary);
+          font-weight: 700;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .cpftInlineReplyHandle {
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .cpftInlineReplyTime {
+          flex-shrink: 0;
+        }
+        .cpftInlineReplyText {
+          overflow-wrap: anywhere;
+          white-space: pre-wrap;
+        }
+        :is(.cpftInlineReplyText, .cpftInlineRepliesStatus) a {
+          color: var(--cpft-replies-link);
+          text-decoration: none;
+        }
+        :is(.cpftInlineReplyText, .cpftInlineRepliesStatus) a:hover {
+          text-decoration: underline;
+        }
+        .cpftInlineReplyNote {
+          color: var(--cpft-replies-secondary);
+          font-size: 0.8667rem;
+          white-space: normal;
+        }
+        .cpftInlineReplyMedia {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-top: 8px;
+        }
+        .cpftInlineReplyMediaItem {
+          display: block;
+          position: relative;
+        }
+        .cpftInlineReplyMediaItem img {
+          border: 1px solid var(--cpft-replies-line);
+          border-radius: 12px;
+          display: block;
+          max-height: 180px;
+          max-width: 100%;
+          object-fit: cover;
+        }
+        .cpftInlineReplyMedia.cpftSensitive img {
+          filter: blur(24px);
+        }
+        .cpftInlineReplyPlay {
+          background-color: rgba(0, 0, 0, 0.6);
+          border-radius: 9999px;
+          color: white;
+          font-size: 14px;
+          left: 50%;
+          line-height: 36px;
+          position: absolute;
+          text-align: center;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          width: 36px;
+        }
+        .cpftInlineReplyQuote {
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 3;
+          border: 1px solid var(--cpft-replies-line);
+          border-radius: 12px;
+          color: var(--cpft-replies-primary);
+          display: -webkit-box;
+          font-size: 0.9333rem;
+          margin-top: 8px;
+          overflow: hidden;
+          padding: 8px 12px;
+          text-decoration: none;
+        }
+        .cpftInlineReplyPoll {
+          display: flex;
+          flex-direction: column;
+          font-size: 0.9333rem;
+          gap: 4px;
+          margin-top: 8px;
+        }
+        .cpftPollChoice {
+          border: 1px solid var(--cpft-replies-line);
+          border-radius: 9999px;
+          color: var(--cpft-replies-primary);
+          display: flex;
+          gap: 8px;
+          justify-content: space-between;
+          padding: 4px 12px;
+        }
+        .cpftPollResults .cpftPollChoice {
+          background: linear-gradient(to right, var(--cpft-hover-bg, rgba(128, 128, 128, 0.16)) var(--cpft-poll-percent), transparent var(--cpft-poll-percent));
+          border-color: transparent;
+          border-radius: 6px;
+        }
+        .cpftPollResults .cpftPollChoice.cpftPollLeading {
+          background: linear-gradient(to right, color-mix(in srgb, var(--cpft-theme, ${THEME_BLUE}) 35%, transparent) var(--cpft-poll-percent), transparent var(--cpft-poll-percent));
+          font-weight: 700;
+        }
+        .cpftInlineReplyPollInfo {
+          color: var(--cpft-replies-secondary);
+          font-size: 0.8667rem;
+        }
+        .cpftInlineReplyPollInfo a {
+          color: var(--cpft-theme, ${THEME_BLUE});
+        }
+        .cpftInlineReplyActions {
+          align-items: center;
+          color: var(--cpft-replies-secondary);
+          display: flex;
+          flex-wrap: wrap;
+          font-size: 0.8667rem;
+          gap: 4px 16px;
+          margin-top: 6px;
+        }
+        .cpftInlineReplyActions:empty {
+          display: none;
+        }
+        .cpftReplies button {
+          background: none;
+          border: none;
+          color: var(--cpft-replies-link);
+          cursor: pointer;
+          font: inherit;
+          padding: 0;
+        }
+        .cpftReplies button:hover {
+          text-decoration: underline;
+        }
+        :is(.cpftReplies, #cpftQuoteReader) .cpftInlineReplyAction {
+          align-items: center;
+          color: var(--cpft-replies-secondary, rgb(113, 118, 123));
+          display: inline-flex;
+          gap: 4px;
+        }
+        :is(.cpftReplies, #cpftQuoteReader) .cpftInlineReplyAction:hover {
+          color: var(--cpft-replies-link, ${THEME_BLUE});
+          text-decoration: none;
+        }
+        :is(.cpftReplies, #cpftQuoteReader) .cpftInlineReplyAction svg {
+          fill: currentColor;
+          height: 16px;
+          width: 16px;
+        }
+        :is(.cpftReplies, #cpftQuoteReader) .cpftInlineReplyAction:is(.cpftLiked, .cpftLike:hover) {
+          color: rgb(249, 24, 128);
+        }
+        .cpftInlineReplyTweet:focus-visible {
+          outline: 2px solid var(--cpft-replies-link, ${THEME_BLUE});
+          outline-offset: -2px;
+        }
+        .cpftInlineRepliesStatus {
+          color: var(--cpft-replies-secondary);
+          font-size: 0.9333rem;
+          padding: 8px 12px;
+        }
+      `)
+    }
 
     if (config.darkModeTheme != 'lightsOut') {
       cssRules.push(`
@@ -6155,6 +8937,9 @@ function onTimelineChange($timeline, page, options = {}) {
     processTwitterLogos($timeline)
   }
 
+  restoreTimelineInlineReplies($timeline)
+  addTweetActionButtons($timeline)
+
   if (isUserTimeline || !classifyTweets) return
 
   let itemTypes = {}
@@ -6614,6 +9399,10 @@ function onIndividualTweetTimelineChange($timeline, options) {
  */
 function onTitleChange(title) {
   log('title changed', {title, path: location.pathname})
+  if (quoteReaderState && location.pathname != quoteReaderOriginPath) {
+    closeQuoteReader({restoreFocus: false})
+    hideImagePreview()
+  }
 
   if (checkforDisabledHomeTimeline()) return
 
@@ -8112,6 +10901,10 @@ async function main({processImmediately = false} = {}) {
       observeReRenderBoundary()
       patchHistory()
       interceptMediaButton()
+      interceptTimelineTweetClicks()
+      interceptQuoteAndImagePreviews()
+      interceptAskClicks()
+      interceptKeyboardShortcuts()
       if (desktop) {
         fontSize = $html.style.fontSize
         if (!fontSize) {
@@ -8184,6 +10977,12 @@ function configChanged(changes) {
       // adding a hidden attribute won't hide them by default.
       document.querySelector('#cpftSeparatedTweetsTab')?.remove()
       document.querySelectorAll('.cpft_menu_item').forEach(el => el.remove())
+      removeTimelineInlineReplies()
+      closeQuoteReader({restoreFocus: false})
+      hideImagePreview()
+      quoteConversationCache.clear()
+      document.querySelectorAll('.cpftTweetExtraActions').forEach($el => $el.remove())
+      removeAskPanels()
       disconnectObservers(modalObservers, 'modal')
       disconnectObservers(pageObservers, 'page')
       disconnectObservers(globalObservers, 'global')
@@ -8195,8 +10994,32 @@ function configChanged(changes) {
     fontSize = desktop ? $html.style.fontSize : null
   }
 
+  if ('inlineReplies' in changes && !config.inlineReplies || 'sortReplies' in changes) {
+    removeTimelineInlineReplies({clearCache: 'sortReplies' in changes || !config.quoteTweetPreview})
+  }
+  if ('quoteTweetPreview' in changes && !config.quoteTweetPreview || 'sortReplies' in changes) {
+    closeQuoteReader()
+    quoteConversationCache.clear()
+  }
+  if ('hoverImagePreview' in changes && !config.hoverImagePreview) hideImagePreview()
+  if ('askAboutPosts' in changes && !config.askAboutPosts) removeAskPanels()
+  if ('quoteTweetPreview' in changes || 'askAboutPosts' in changes || 'hideQuoteTweetMetrics' in changes) {
+    addTweetActionButtons(document)
+  }
+  if ('autoTranslateReplies' in changes && config.autoTranslateReplies ||
+      'inlineReplyActions' in changes || 'keyboardShortcuts' in changes || 'askAboutPosts' in changes) {
+    // Update replies which are already showing
+    for (let reply of inlineReplyTweets.values()) {
+      if (document.querySelector(`.cpftInlineReply[data-tweet-id="${reply.id}"]`)) updateInlineReplyCards(reply.id)
+    }
+  }
+
   // Apply configuration changes
   configureCss()
+  if (quoteReaderState) {
+    quoteReaderState.scrollTop = $quoteReader?.querySelector('.cpftQuoteReaderBody')?.scrollTop || 0
+    renderQuoteReader()
+  }
   configureFont()
   configureDynamicCss()
   configureThemeCss()
