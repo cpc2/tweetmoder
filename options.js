@@ -119,6 +119,7 @@ for (let translationId of [
   'hideWhoToFollowEtcLabel',
   'inlineRepliesLabel',
   'autoTranslateRepliesLabel',
+  'dontTranslateLanguagesLabel',
   'askAboutPostsLabel',
   'inlineReplyActionsLabel',
   'keyboardShortcutsLabel',
@@ -294,7 +295,8 @@ const defaultConfig = {
   hideWhoToFollowEtc: true,
   inlineReplies: true,
   autoTranslateReplies: true,
-  askAboutPosts: true,
+  dontTranslateLanguages: 'en',
+  askAboutPosts: false,
   askOpenInReader: true,
   inlineReplyActions: true,
   keyboardShortcuts: true,
@@ -543,6 +545,7 @@ function updateCheckboxGroups() {
 function updateDisplay() {
   $body.classList.toggle('debugging', optionsConfig.debug)
   $body.classList.toggle('askApiProvider', optionsConfig.askProvider != 'codex')
+  $body.classList.toggle('autoTranslatingReplies', optionsConfig.autoTranslateReplies)
   $body.classList.toggle('chronological', optionsConfig.alwaysUseLatestTweets)
   $body.classList.toggle('disabled', !optionsConfig.enabled)
   $body.classList.toggle('disabledHomeTimeline', optionsConfig.disableHomeTimeline)

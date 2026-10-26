@@ -18,7 +18,7 @@ Everything in Control Panel for Twitter, plus:
 - **Quote reader:** click a quoted tweet, even a quote inside a quote, and it opens in a reader beside the timeline with its photos, video, polls, replies and earlier conversation. **Back** steps through what you've read.
 - **Quote Tweets:** a quotes button on tweets opens their Quote Tweets in the reader, newest first.
 - **Ask about this tweet:** a **?** button asks AI what a tweet is about. It's for vagueposts, jokes, wordplay, text in images and background on a situation. Answers have **Think harder**, **Ask again** and follow-up questions.
-- **Automatic translation** of replies in other languages, using X's own translations.
+- **Automatic translation** of replies in other languages, using X's own translations. List the languages you read (English by default) and they're left as they are.
 - **Like and reply** right from inline replies, and **keyboard shortcuts** for all of it.
 - **Image previews** that enlarge photos on hover, and a narrower left navigation panel to make room for the reader.
 
@@ -40,11 +40,11 @@ If you also use Control Panel for Twitter, turn it off while Tweetmoder is on, s
 
 ## Ask about this tweet
 
-Choose the AI provider in Tweetmoder's options:
+This one is off until you turn on **Show a ? button to ask AI what a tweet is about** in Tweetmoder's options and choose an AI provider there:
 
 - **OpenAI API:** your OpenAI API key. Uses web search and sees images.
 - **OpenAI-compatible API:** any Chat Completions URL, such as OpenRouter, Ollama or LM Studio.
-- **Codex (local helper), the default:** uses your ChatGPT plan through OpenAI's [Codex CLI](https://github.com/openai/codex) instead of a paid API key. Windows only, for now. It needs Node.js, and Codex installed and signed in. Then clone this repository and run:
+- **Codex (local helper):** uses your ChatGPT plan through OpenAI's [Codex CLI](https://github.com/openai/codex) instead of a paid API key. Windows only, for now. It needs Node.js, and Codex installed and signed in. Then clone this repository and run:
 
   ```
   node ask-helper/install.cjs --id <Tweetmoder's id from the extensions page>

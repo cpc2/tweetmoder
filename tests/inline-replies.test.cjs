@@ -350,6 +350,27 @@ test('replies in other languages are translated automatically, once', async t =>
   assert.equal(requested.length, 1)
 })
 
+test('languages you read are never translated automatically, but can still be translated by hand', async t => {
+  const {api, window, document} = setup(t)
+  window.config.autoTranslateReplies = true
+  window.config.dontTranslateLanguages = 'en, ES,ca'
+  let requested = []
+  window.fetch = async url => {
+    requested.push(String(url))
+    return response({translationState: 'Success', translation: 'Translated', localizedSourceLanguage: 'Spanish'})
+  }
+  const replies = [tweet('101'), tweet('102', '100', {lang: 'ca'}), tweet('103', '100', {lang: 'fr'})].map(api.parseInlineReply)
+  for (let reply of replies) {
+    api.inlineReplyTweets.set(reply.id, reply)
+    document.body.append(api.createInlineReply(reply))
+  }
+  await flush()
+  await flush()
+  assert.equal(requested.length, 1)
+  assert.match(requested[0], /tweetId=103,/)
+  assert.ok(document.querySelector('[data-tweet-id="101"] button[data-action="translate"]'))
+})
+
 test('internal links navigate within X while explicit new-tab links keep their target', t => {
   const {api, window, document, navigations} = setup(t)
   const root = document.createElement('div')

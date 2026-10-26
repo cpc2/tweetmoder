@@ -190,7 +190,8 @@ const config = {
   hideWhoToFollowEtc: true,
   inlineReplies: true,
   autoTranslateReplies: true,
-  askAboutPosts: true,
+  dontTranslateLanguages: 'en',
+  askAboutPosts: false,
   askOpenInReader: true,
   inlineReplyActions: true,
   keyboardShortcuts: true,
@@ -4684,6 +4685,7 @@ function showMoreInlineReplies(tweetId) {
  */
 function autoTranslateInlineReply(reply) {
   if (!config.autoTranslateReplies || inlineReplyTranslations.has(reply.id) || !isInlineReplyTranslatable(reply)) return
+  if (isDontTranslateLanguage(reply.lang)) return
   inlineReplyTranslations.set(reply.id, {status: 'loading', shown: true})
   queueMicrotask(() => {
     inlineReplyTranslations.delete(reply.id)
@@ -4860,6 +4862,17 @@ async function toggleInlineReplyLike(replyId) {
  */
 function replyToInlineReply(replyId) {
   window.open(`/intent/post?in_reply_to=${encodeURIComponent(replyId)}`, 'cpftReply', 'popup,width=600,height=560')
+}
+
+/**
+ * Languages the user reads, listed as codes such as "en, es, ca", are never
+ * translated automatically.
+ * @param {?string} language
+ */
+function isDontTranslateLanguage(language) {
+  if (!language) return false
+  let base = language.split('-')[0].toLowerCase()
+  return String(config.dontTranslateLanguages || '').toLowerCase().split(/[^a-z-]+/).some(code => code && code.split('-')[0] == base)
 }
 
 /** @param {import("./types").InlineReply} reply */
@@ -11006,7 +11019,7 @@ function configChanged(changes) {
   if ('quoteTweetPreview' in changes || 'askAboutPosts' in changes || 'hideQuoteTweetMetrics' in changes) {
     addTweetActionButtons(document)
   }
-  if ('autoTranslateReplies' in changes && config.autoTranslateReplies ||
+  if ('autoTranslateReplies' in changes && config.autoTranslateReplies || 'dontTranslateLanguages' in changes ||
       'inlineReplyActions' in changes || 'keyboardShortcuts' in changes || 'askAboutPosts' in changes) {
     // Update replies which are already showing
     for (let reply of inlineReplyTweets.values()) {

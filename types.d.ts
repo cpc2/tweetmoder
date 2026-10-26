@@ -72,6 +72,7 @@ export type Config = {
   hideWhoToFollowEtc: boolean
   inlineReplies: boolean
   autoTranslateReplies: boolean
+  dontTranslateLanguages: string
   askAboutPosts: boolean
   askOpenInReader: boolean
   inlineReplyActions: boolean

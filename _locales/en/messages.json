@@ -317,6 +317,9 @@
   "autoTranslateRepliesLabel": {
     "message": "Automatically translate replies in other languages"
   },
+  "dontTranslateLanguagesLabel": {
+    "message": "Don't translate these languages (codes, like en, es, ca)"
+  },
   "askAboutPostsLabel": {
     "message": "Show a ? button to ask AI what a tweet is about"
   },

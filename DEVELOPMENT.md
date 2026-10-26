@@ -7,7 +7,8 @@ replies, or fetches another page when the cache is exhausted. Replies with
 children can expand recursively. Replies and reader tweets in other languages are
 translated automatically into your X language, like X does for timeline tweets,
 with **Show original** to switch back (**Automatically translate replies in other
-languages**).
+languages**). Languages listed in **Don't translate these languages** (codes,
+`en` by default) are left alone, though **Translate tweet** still works on them.
 
 The same settings group now also enables these features by default:
 
@@ -117,6 +118,8 @@ Defaults match the author's own settings, including these upstream ones:
 account location on focused tweets shown, "Always use Latest" off, the "For you"
 timeline and view counts shown, retweets left in the timeline, Following sorted
 by popular and replies by most liked. Every new feature has its own toggle.
+**Ask about this tweet** is the exception: it's off by default, since each
+provider needs setting up first.
 
 ## Prepare and load in Brave
 
