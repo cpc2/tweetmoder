@@ -523,6 +523,7 @@ section.group > p.askHint code {
   font-size: 11px;
 }
 
+body:not(.askingAboutPosts) .askOptions > :not(label, .askToggle),
 body:not(.autoTranslatingReplies) .autoTranslateOnly,
 body.askApiProvider .askCodexOnly,
 body:not(.askApiProvider) .askApiOnly {

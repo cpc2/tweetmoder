@@ -353,13 +353,6 @@
       </section>
       <section class="checkbox">
         <label>
-          <span id="askAboutPostsLabel">Show a ? button to ask AI what a tweet is about</span>
-          <input type="checkbox" name="askAboutPosts">
-          <span class="toggle"></span>
-        </label>
-      </section>
-      <section class="checkbox">
-        <label>
           <span id="quoteTweetPreviewLabel">Open quoted tweets in a reader beside the timeline</span>
           <input type="checkbox" name="quoteTweetPreview">
           <span class="toggle"></span>
@@ -957,8 +950,15 @@
       </section>
     </section>
 
-    <section class="group labelled">
+    <section class="group labelled askOptions">
       <label id="askOptionsLabel">Ask about this tweet (AI)</label>
+      <section class="checkbox askToggle">
+        <label>
+          <span id="askAboutPostsLabel">Show a ? button to ask AI what a tweet is about</span>
+          <input type="checkbox" name="askAboutPosts">
+          <span class="toggle"></span>
+        </label>
+      </section>
       <section class="checkbox">
         <label>
           <span id="askOpenInReaderLabel">Show answers about timeline tweets in the reader beside the timeline</span>
@@ -1084,7 +1084,7 @@
       </section>
     </section>
 
-    <div id="version">v4.25.1<span id="debugCountdown"></span></div>
+    <div id="version">v1.0.0<span id="debugCountdown"></span></div>
   </form>
   <script src="ask-prompt.js"></script>
   <script src="options.js"></script>
