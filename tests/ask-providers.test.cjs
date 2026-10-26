@@ -12,8 +12,9 @@ const askPrompt = require('../ask-prompt.js')
 /**
  * Runs background.js with the given stored settings.
  * @param {{[key: string]: any}} stored
+ * @param {{manifest?: any, dataConsent?: boolean}} [options]
  */
-function loadBackground(stored = {}) {
+function loadBackground(stored = {}, {manifest = {manifest_version: 3, permissions: ['storage', 'nativeMessaging']}, dataConsent = false} = {}) {
   const listeners = []
   const native = []
   const fetches = []
@@ -27,7 +28,7 @@ function loadBackground(stored = {}) {
       i18n: {getMessage: () => ''},
       runtime: {
         id: 'ext',
-        getManifest: () => ({manifest_version: 3}),
+        getManifest: () => manifest,
         onMessage: {addListener: listener => listeners.push(listener)},
         sendNativeMessage: async (host, message) => {
           native.push({host, message})
@@ -35,6 +36,8 @@ function loadBackground(stored = {}) {
         },
       },
       action: {setTitle() {}, setIcon() {}, setBadgeText() {}},
+      browserAction: {setTitle() {}, setIcon() {}},
+      permissions: {contains: async () => dataConsent},
       storage: {local: {
         get: (keys, callback) => {
           let values = Object.fromEntries(Object.entries(stored).filter(([key]) => Array.isArray(keys) ? keys.includes(key) : true))
@@ -81,6 +84,18 @@ test('Codex gets the chosen model, reasoning, fast mode, search and extra instru
   await ask({context, history: [], question: null, deep: true})
   assert.equal(native[1].message.model, 'gpt-6.1-sol')
   assert.equal(native[1].message.reasoningEffort, 'medium')
+})
+
+test('Firefox asks for consent before sending tweets, and uses the OpenAI API instead of Codex', async () => {
+  const manifest = {manifest_version: 2, permissions: ['storage'], browser_specific_settings: {gecko: {data_collection_permissions: {required: ['none'], optional: ['websiteContent']}}}}
+  let {ask, native, fetches} = loadBackground({askApiKey: 'sk-test'}, {manifest})
+  let result = await ask({context, history: [], question: null, deep: false})
+  assert.match(result.error, /permission/)
+  assert.equal(fetches.length, 0)
+  ;({ask, native, fetches} = loadBackground({askApiKey: 'sk-test'}, {manifest, dataConsent: true}))
+  await ask({context, history: [], question: null, deep: false})
+  assert.equal(native.length, 0)
+  assert.match(fetches[0].url, /\/responses$/)
 })
 
 test('the OpenAI API gets instructions, images, web search, follow-ups, and links its citations', async () => {

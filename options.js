@@ -221,6 +221,13 @@ if (navigator.userAgent.includes('Safari/') && !/Chrom(e|ium)\//.test(navigator.
   $body.classList.toggle('edge', navigator.userAgent.includes('Edg/'))
 }
 
+/** @type {any} */
+const manifest = chrome.runtime.getManifest()
+// Firefox builds can't run the Codex helper, which needs native messaging
+const codexAvailable = Boolean(manifest.permissions?.includes('nativeMessaging'))
+// Firefox asks for consent before tweets are sent to an AI provider
+const askNeedsDataConsent = Boolean(manifest.browser_specific_settings?.gecko?.data_collection_permissions?.optional?.includes('websiteContent'))
+
 //#region Default config
 /** @type {import("./types").Config} */
 const defaultConfig = {
@@ -476,6 +483,16 @@ function onFormChanged(e) {
       })
       $el.indeterminate = false
     } else {
+      if ($el.name == 'askAboutPosts' && $el.checked && askNeedsDataConsent) {
+        // Has to be requested while handling the click
+        chrome.permissions.request(/** @type {any} */ ({data_collection: ['websiteContent']})).then((granted) => {
+          if (granted) return
+          $el.checked = false
+          optionsConfig.askAboutPosts = false
+          storeConfigChanges({askAboutPosts: false})
+          updateDisplay()
+        })
+      }
       optionsConfig[$el.name] = changedConfig[$el.name] = $el.checked
       // Don't try to redirect the Home timeline to Notifications if both are disabled
       if ($el.name == 'hideNotifications' &&
@@ -659,6 +676,10 @@ function main() {
       storedConfig.twitterBlueChecks = 'replace'
     }
     optionsConfig = {...defaultConfig, ...storedConfig}
+    if (!codexAvailable) {
+      $form.querySelector('select[name="askProvider"] option[value="codex"]')?.remove()
+      if (optionsConfig.askProvider == 'codex') optionsConfig.askProvider = 'openai'
+    }
 
     $body.classList.toggle('debug', optionsConfig.debug === true)
     $experiments.open = Boolean(optionsConfig.customCss)

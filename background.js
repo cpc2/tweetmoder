@@ -182,6 +182,14 @@ async function askWithChatCompletions(request, settings, model, reasoningEffort)
 async function answerAsk(request) {
   // Includes the API key, which is never passed to the page
   let settings = {...ASK_DEFAULTS, ...await chrome.storage.local.get(Object.keys(ASK_DEFAULTS))}
+  /** @type {any} */
+  let manifest = chrome.runtime.getManifest()
+  // Firefox builds can't run the Codex helper, which needs native messaging
+  if (settings.askProvider == 'codex' && !manifest.permissions?.includes('nativeMessaging')) settings.askProvider = 'openai'
+  if (manifest.browser_specific_settings?.gecko?.data_collection_permissions?.optional?.includes('websiteContent') &&
+      !await chrome.permissions.contains(/** @type {any} */ ({data_collection: ['websiteContent']}))) {
+    throw new Error('Tweetmoder needs your permission to send tweets to an AI provider. Turn "Ask about this tweet" off and on again in its options to allow it.')
+  }
   let model = (request.deep ? settings.askDeepModel : settings.askModel).trim()
   let reasoningEffort = (request.deep ? settings.askDeepReasoningEffort : settings.askReasoningEffort) || null
   if (!model) throw new Error('No model is set in the extension\'s AI options')
