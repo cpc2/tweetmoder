@@ -27,6 +27,7 @@ function setup(t) {
     log() {}, warn() {}, error() {}, scrollBy() {},
     fetch: async () => { throw Error('Unexpected fetch') },
   })
+  Object.defineProperty(window, 'currentPagePath', {get: () => window.location.pathname})
   const navigations = []
   window.History_push = target => navigations.push(target)
   vm.runInContext(`${selectors}\n${region}\nthis.api = {
@@ -248,7 +249,7 @@ test('timeline text clicks expand and collapse without navigation; native contro
   assert.equal(calls, 1, 'reopening uses cached replies')
 })
 
-test('selected text and individual-post pages keep normal click behavior', t => {
+test('selected text and the tweet a page is about keep normal click behavior', t => {
   const {api, window, document} = setup(t)
   const article = addTweet(document)
   const text = article.querySelector('[data-testid="tweetText"]')
@@ -258,11 +259,26 @@ test('selected text and individual-post pages keep normal click behavior', t => 
   window.getSelection().addRange(range)
   assert.equal(click(window, text).defaultPrevented, false)
   window.getSelection().removeAllRanges()
+  // Its replies are already showing below it
   window.history.replaceState({}, '', '/author/status/100')
   assert.equal(click(window, text).defaultPrevented, false)
-  api.expandedTimelinePosts.add('100')
-  api.restoreTimelineInlineReplies(document.querySelector('#timeline'))
   assert.equal(document.querySelector('.cpftRepliesRoot'), null)
+})
+
+test('replies on a tweet page expand in place like timeline tweets', t => {
+  const {api, window, document} = setup(t)
+  window.history.replaceState({}, '', '/author/status/100')
+  addTweet(document, '100')
+  const reply = addTweet(document, '101')
+  api.interceptTimelineTweetClicks()
+  assert.equal(click(window, reply.querySelector('[data-testid="tweetText"]')).defaultPrevented, true)
+  assert.equal(reply.nextElementSibling.classList.contains('cpftRepliesRoot'), true)
+  assert.equal(reply.nextElementSibling.dataset.tweetId, '101')
+  // Put back after Twitter re-renders the reply
+  reply.nextElementSibling.remove()
+  api.restoreTimelineInlineReplies(document.querySelector('#timeline'))
+  assert.equal(reply.nextElementSibling?.dataset.tweetId, '101')
+  assert.equal(window.location.pathname, '/author/status/100')
 })
 
 test('nested replies expand and collapse independently from their parent', async t => {

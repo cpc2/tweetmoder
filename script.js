@@ -5142,7 +5142,7 @@ function toggleTimelineInlineReplies($tweet, {id, path}) {
  * @param {HTMLElement} $timeline
  */
 function restoreTimelineInlineReplies($timeline) {
-  if (!config.enabled || !config.inlineReplies || isOnIndividualTweetPage()) return
+  if (!config.enabled || !config.inlineReplies) return
   for (let $tweet of $timeline.querySelectorAll(Selectors.TWEET)) {
     let permalink = getTweetPermalink($tweet)
     let $container = /** @type {HTMLElement} */ ($tweet.nextElementSibling)
@@ -5256,8 +5256,16 @@ function toggleInlineReplyReplies($reply) {
 }
 
 /**
- * Clicking on a tweet in a timeline expands its replies below it instead of
- * navigating to the tweet's page.
+ * The tweet a tweet's page is about, whose replies the page already shows.
+ * @param {{id: string}} permalink
+ */
+function isFocalTweet(permalink) {
+  return isOnIndividualTweetPage() && URL_TWEET_BASE_RE.exec(currentPagePath)?.[2] == permalink.id
+}
+
+/**
+ * Clicking on a tweet in a timeline, or on a reply on a tweet's page, expands
+ * its replies below it instead of navigating to the tweet's page.
  */
 function interceptTimelineTweetClicks() {
   document.addEventListener('click', (e) => {
@@ -5265,7 +5273,6 @@ function interceptTimelineTweetClicks() {
     if (e.defaultPrevented) return
     if (e.button != 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
     if (!(e.target instanceof Element)) return
-    if (isOnIndividualTweetPage()) return
 
     let $tweet = e.target.closest(Selectors.TWEET)
     if (!$tweet || !$tweet.closest(Selectors.TIMELINE)) return
@@ -5274,7 +5281,7 @@ function interceptTimelineTweetClicks() {
     if (!window.getSelection()?.isCollapsed) return
 
     let permalink = getTweetPermalink($tweet)
-    if (!permalink) return
+    if (!permalink || isFocalTweet(permalink)) return
 
     e.preventDefault()
     e.stopImmediatePropagation()
@@ -6597,7 +6604,7 @@ function onTimelinePostKey(e) {
   if (!$tweet || !$tweet.closest(Selectors.TIMELINE) || e.shiftKey) return false
   let permalink = getTweetPermalink($tweet)
   if (!permalink) return false
-  if (e.key == 'e' && config.inlineReplies && !isOnIndividualTweetPage()) {
+  if (e.key == 'e' && config.inlineReplies && !isFocalTweet(permalink)) {
     toggleTimelineInlineReplies($tweet, permalink)
     return true
   }
@@ -9395,6 +9402,9 @@ function onIndividualTweetTimelineChange($timeline, options) {
     tweakFocusedTweet($focusedTweet, options)
     seen.set($focusedTweet, {itemType: 'FOCUSED_TWEET', hidden: false})
   }
+
+  restoreTimelineInlineReplies($timeline)
+  addTweetActionButtons($timeline)
 
   if (debug && config.debugLogTimelineStats) {
     log(
